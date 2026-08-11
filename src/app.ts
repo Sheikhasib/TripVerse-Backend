@@ -8,10 +8,8 @@ import config from "./config";
 import notFoundHandler from "./middleware/notFound";
 import globalErrorHandler from "./middleware/globalErrorHandler";
 import { prisma } from "./lib/prisma";
-
-// Feature module routes are registered below as each is built
-// (Steps 4-9: auth, uploads, packages, bookings, reviews, dashboard).
-// import { authRoutes } from "./modules/auth/auth.route";
+import { authRoutes } from "./modules/auth/auth.route";
+import { userRoutes } from "./modules/user/user.route";
 
 const app: Application = express();
 
@@ -33,8 +31,8 @@ if (config.node_env !== "production") {
   app.use(morgan("dev"));
 }
 
-app.use(express.json({ limit: "10kb" }));
-app.use(express.urlencoded({ extended: true, limit: "10kb" }));
+app.use(express.json({ limit: "100kb" }));
+app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 app.use(cookieParser());
 
 // Strict limiter — auth endpoints, brute-force protection
@@ -64,6 +62,7 @@ const apiLimiter = rateLimit({
 app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/register", authLimiter);
 app.use("/api/auth/demo-login", authLimiter);
+app.use("/api/auth/google", authLimiter);
 app.use("/api", apiLimiter);
 
 // Root route
@@ -92,8 +91,8 @@ app.get("/health", async (req: Request, res: Response) => {
 });
 
 // ── Feature routes register here as each module is built ──
-// app.use("/api/auth", authRoutes);
-// app.use("/api/users", userRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
 // app.use("/api/uploads", uploadRoutes);
 // app.use("/api/packages", packageRoutes);
 // app.use("/api/bookings", bookingRoutes);

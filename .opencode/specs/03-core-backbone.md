@@ -10,7 +10,7 @@ Shared plumbing every module (Steps 4–11) plugs into. Build and test this in i
 ## Security
 - `helmet` for security headers.
 - CORS — origin is an allow-list, not a single string: `[FRONTEND_URL_DEV, FRONTEND_URL_PROD]` (both env-driven), credentials enabled.
-- Request body size limit — `express.json({ limit: '10kb' })`. Package/booking payloads are small text fields (images go through the upload endpoint as URLs, not embedded bytes), so 10kb is generous; blocks trivial payload-flooding abuse.
+- Request body size limit — `express.json({ limit: '100kb' })`. Package/booking payloads are small text fields (images go through the upload endpoint as URLs, not embedded bytes), and the largest legitimate JSON payload is a blog post's long-form HTML — 100kb comfortably covers both while still blocking payload-flooding abuse. Do **not** mount a second `express.json` at the router level to "override" this: the global parser runs first, so a router-level override never applies (any oversized body 413s at the global layer).
 - Rate limiting — two-tier, not one blanket limiter:
   - **Strict**: `/api/auth/login`, `/api/auth/register`, `/api/auth/demo-login` — 5 requests / 15 min per IP
   - **Standard**: everything else under `/api` — 100 requests / 15 min per IP

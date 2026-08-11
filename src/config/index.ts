@@ -26,6 +26,10 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default("1d"),
   JWT_REFRESH_EXPIRES_IN: z.string().default("30d"),
 
+  // Google OAuth is optional — server boots without it; /api/auth/google
+  // returns a clean 400 until GOOGLE_CLIENT_ID is configured.
+  GOOGLE_CLIENT_ID: z.string().optional(),
+
   CLOUDINARY_CLOUD_NAME: z.string().min(1, "CLOUDINARY_CLOUD_NAME is required"),
   CLOUDINARY_API_KEY: z.string().min(1, "CLOUDINARY_API_KEY is required"),
   CLOUDINARY_API_SECRET: z.string().min(1, "CLOUDINARY_API_SECRET is required"),
@@ -56,6 +60,8 @@ const config = {
   jwt_refresh_secret: env.JWT_REFRESH_SECRET,
   jwt_access_expires_in: env.JWT_ACCESS_EXPIRES_IN,
   jwt_refresh_expires_in: env.JWT_REFRESH_EXPIRES_IN,
+
+  google_client_id: env.GOOGLE_CLIENT_ID,
 
   cloudinary_cloud_name: env.CLOUDINARY_CLOUD_NAME,
   cloudinary_api_key: env.CLOUDINARY_API_KEY,

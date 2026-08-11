@@ -15,6 +15,10 @@ PATCH  /:id/status            auth          validated against the state machine 
 ## `totalPrice` is never trusted from the client
 Request body only accepts `packageId, travelDate, travelers` — the controller looks up the package's current `price`, computes `totalPrice = price * travelers` server-side, and persists that. Any `totalPrice` field sent in the request body is ignored. Without this, a tampered request could book a package at an arbitrary price.
 
+## Create validation
+- `travelDate` — Zod `.refine(...)` refusing dates before today; the state machine's `CONFIRMED → COMPLETED` rule keys off `travelDate`, so a past date is nonsense.
+- `travelers` — Int, `.min(1)`, `.max(20)` — bounds the server-side `totalPrice = price * travelers` and keeps values sane.
+
 ## Duplicate-booking guard
 Before creating, check for an existing `PENDING` booking with the same `userId + packageId + travelDate`; reject if found.
 

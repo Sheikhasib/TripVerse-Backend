@@ -25,7 +25,7 @@ Server generates `slug` from `title` on create (kebab-case, same slugify as pack
 ## Ownership & publishing
 - Agent can only edit/delete their own posts (`authorId` check, same as package `agentId`).
 - Any edit resets `status` to `DRAFT` — re-publish explicitly via `/:id/status`. Admin can edit anything and is the only role that can publish/unpublish.
-- `coverImage` is a single Cloudinary URL returned by Step 5's upload endpoint (required on create). `content` is long-form text/HTML — do not reuse the 10kb global body limit for this field; apply `express.json({ limit: '100kb' })` on the blog routes only, or the post body will be rejected.
+- `coverImage` is a single Cloudinary URL returned by Step 5's upload endpoint (required on create). `content` is long-form text/HTML — the global body limit is already 100kb (Step 3), which comfortably fits a post body. No per-route JSON parser.
 
 ## Sort & search
 `sortBy` = `newest` (createdAt desc, default) | `oldest` | `title`. `search` matches `title`/`excerpt` contains-insensitive. Standard `page`/`limit` with `meta` in the envelope; `limit` capped at Step 3's 50. No review/comment system — **[LATER]** blog comments.

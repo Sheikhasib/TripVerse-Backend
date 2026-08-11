@@ -4,6 +4,7 @@
 - **[MVP]** `auth(...roles: Role[])` — single combined middleware (matches GearUp): verifies JWT, re-fetches user from DB (catches suspended/deleted users immediately), attaches `req.user = { id, name, email, role }`.
 - **[MVP]** Roles: `USER`, `AGENT`, `ADMIN`. (Rubric says "User / Admin / Manager" — `AGENT` is the "Manager" role; keep that label on the frontend, e.g. sidebar menu, role badges.)
 - **[MVP]** Token invalidation via `tokenVersion` — access/refresh JWT payload includes `tokenVersion`. On logout or password change, `User.tokenVersion` is incremented; `auth` middleware compares payload version against the current DB value and rejects on mismatch. This makes logout actually invalidate the token instead of only clearing the cookie.
+- **[MVP]** Refresh flow — `POST /auth/refresh` completes the "cookie-based refresh token" promise from Step 1: verify the refresh token, re-fetch the user to reject suspended/deleted/mismatched-`tokenVersion` accounts, then issue a fresh access + refresh token. Without it the 1-day access token forces a daily re-login.
 - **[LATER]** Email verification on registration (the `emailVerified` field exists; Google sets it via `email_verified`, credentials accounts stay `false` until this flow is built).
 - **[LATER]** Password reset flow.
 
@@ -24,13 +25,17 @@ POST   /register
 POST   /login
 POST   /google              body: { idToken }
 POST   /demo-login          body: { role }
+POST   /refresh             — refresh token → new access + refresh
 POST   /logout              auth   — increments tokenVersion, clears cookie
 GET    /me                  auth
 ```
 
+## Profile & password change
+`PATCH /users/profile` accepts `name`, `phone`, `avatarUrl`, and optionally `currentPassword` + `newPassword` (GearUp pattern). A successful password change increments `tokenVersion` — killing every other active session, which is the reason the tokenVersion mechanism exists beyond logout. Google (passwordless) accounts are blocked from setting a password, same as Step 4's Google rule.
+
 ## Endpoints — `/api/users`
 ```
-PATCH  /profile             auth
+PATCH  /profile             auth    name, phone, avatarUrl + currentPassword/newPassword (Google accounts blocked)
 GET    /                    auth(ADMIN)  ?page&limit&search
 PATCH  /:id/role            auth(ADMIN)
 PATCH  /:id/status          auth(ADMIN)   suspend/reactivate

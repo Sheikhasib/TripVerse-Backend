@@ -1,4 +1,4 @@
-// req.user is attached by the `auth` middleware (Step 4 — Auth Module).
+// req.user is attached by the `auth` middleware (src/middleware/auth.ts).
 // The Prisma schema (Step 2) generates the Role enum used below for type safety.
 import type { Role } from "../../generated/prisma/enums";
 
