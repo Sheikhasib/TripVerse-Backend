@@ -1,0 +1,21 @@
+model Booking {
+  id         String        @id @default(uuid())
+  travelDate DateTime
+  travelers  Int
+  totalPrice Decimal       @db.Decimal(10, 2)
+  status     BookingStatus @default(PENDING)
+
+  userId    String
+  packageId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User         @relation("CustomerBookings", fields: [userId], references: [id])
+  package TourPackage @relation(fields: [packageId], references: [id])
+
+  @@index([userId])
+  @@index([packageId])
+  @@index([status])
+  @@map("bookings")
+}

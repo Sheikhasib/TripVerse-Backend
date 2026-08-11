@@ -1,0 +1,30 @@
+model TourPackage {
+  id          String        @id @default(uuid())
+  title       String
+  slug        String        @unique
+  description String
+  location    String
+  price       Decimal       @db.Decimal(10, 2)
+  duration    Int
+  rating      Float         @default(0)
+  images      String[]
+  status      PackageStatus @default(PENDING)
+  isDeleted   Boolean       @default(false)
+
+  categoryId String
+  agentId    String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category Category      @relation(fields: [categoryId], references: [id])
+  agent    User          @relation("AgentPackages", fields: [agentId], references: [id])
+  bookings Booking[]
+  reviews  Review[]
+
+  @@index([categoryId])
+  @@index([categoryId, price])
+  @@index([price])
+  @@index([status])
+  @@map("tour_packages")
+}
