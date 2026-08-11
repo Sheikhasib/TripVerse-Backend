@@ -1,7 +1,9 @@
 # TripVerse Server
 
 Backend API for TripVerse (travel packages, bookings, reviews). Scaffolded from a multi-step spec
-(`01-project-setup.md` → `15-backlog-summary.md`). **Currently: Step 2 done — full Prisma schema (7 models + 6 enums), migration applied. Feature modules not built yet.**
+(`01-project-setup.md` → `15-backlog-summary.md`). **Currently: Steps 1-4 done — project setup, full Prisma schema (7 models + 6 enums, migration applied), and the auth module (register/login/google/demo-login/refresh/logout/me + RBAC middleware + admin user management).**
+
+> **Workflow rule:** commit to git continuously as the work progresses — at minimum once per spec step, and more often for substantial milestones within a step (e.g. after a feature module's endpoints are verified). Push after each commit. Never leave uncommitted work at the end of a session.
 
 ## Quick start
 
