@@ -21,3 +21,13 @@ Files are numbered in the order you build them — each step depends on the one 
 15. `15-backlog-summary.md` — everything explicitly cut from MVP, for later
 
 Finish and test one file before opening the next.
+
+## Git workflow (mandatory)
+
+Commit and push continuously as the build progresses — not once at the end:
+
+- **At minimum**: one commit per spec step, right after its module endpoints are verified.
+- **More often**: commit at substantial milestones *within* a step (e.g. after the auth module's routes were wired and live-tested, before starting the user module).
+- Commit small, reviewable units — don't bundle multiple unimplemented steps into one commit.
+- Push to `origin` after every commit.
+- Never end a session (or ask to move to the next step) with uncommitted work on the tree.
