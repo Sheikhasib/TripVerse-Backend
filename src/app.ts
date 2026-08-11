@@ -10,6 +10,7 @@ import globalErrorHandler from "./middleware/globalErrorHandler";
 import { prisma } from "./lib/prisma";
 import { authRoutes } from "./modules/auth/auth.route";
 import { userRoutes } from "./modules/user/user.route";
+import { uploadRoutes } from "./modules/uploads/uploads.route";
 
 const app: Application = express();
 
@@ -93,7 +94,7 @@ app.get("/health", async (req: Request, res: Response) => {
 // ── Feature routes register here as each module is built ──
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
-// app.use("/api/uploads", uploadRoutes);
+app.use("/api/uploads", uploadRoutes);
 // app.use("/api/packages", packageRoutes);
 // app.use("/api/bookings", bookingRoutes);
 // app.use("/api/reviews", reviewRoutes);

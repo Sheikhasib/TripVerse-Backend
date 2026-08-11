@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import httpStatus from "http-status";
+import multer from "multer";
 import { ZodError } from "zod";
 import { Prisma } from "../../generated/prisma/client";
 import { AppError } from "../utils/appError";
@@ -22,6 +23,22 @@ const globalErrorHandler = (
     statusCode = httpStatus.BAD_REQUEST;
     errorMessage = err.issues.map((i) => i.message).join(", ");
     errorName = "ZodError";
+  }
+
+  // Multer file upload error
+  else if (err instanceof multer.MulterError) {
+    statusCode = httpStatus.BAD_REQUEST;
+    errorName = "MulterError";
+    errorMessage =
+      err.code === "LIMIT_FILE_SIZE"
+        ? "File too large. Maximum size is 5MB."
+        : `Upload failed: ${err.code}`;
+  }
+
+  // Custom file type rejection from the multer fileFilter
+  else if (err instanceof Error && (err as any).code === "INVALID_FILE_TYPE") {
+    statusCode = httpStatus.BAD_REQUEST;
+    errorMessage = err.message;
   }
 
   // Prisma validation error
