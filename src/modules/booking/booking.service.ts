@@ -301,6 +301,10 @@ const updateBookingStatus = async (
     throw new AppError(404, "Booking not found.");
   }
 
+  if (!canManage(booking, actor)) {
+    throw new AppError(403, "You are not authorized to perform this action.");
+  }
+
   const rule = TRANSITIONS[booking.status]?.[to];
   if (!rule) {
     throw new AppError(
