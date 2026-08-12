@@ -7,10 +7,10 @@ import { bookingValidations } from "./booking.validation";
 
 const router = Router();
 
-// Create booking (customer)
+// Create booking (customer only — agents sell, admins manage)
 router.post(
   "/",
-  auth(),
+  auth(Role.USER),
   validateRequest({ body: bookingValidations.createSchema }),
   bookingController.createBooking,
 );
