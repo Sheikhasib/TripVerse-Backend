@@ -13,14 +13,16 @@ import {
 const toNumber = (value: unknown): number => Number(value ?? 0);
 
 // Booking-status breakdown via groupBy + _count. Optional package-id scope
-// (`agentId`) limits it to an agent's own packages.
+// (`agentId`) limits it to an agent's own, non-deleted packages.
 const getBookingsByStatus = async (
   agentId?: string,
 ): Promise<IBookingsByStatus[]> => {
   const grouped = await prisma.booking.groupBy({
     by: ["status"],
     _count: { _all: true },
-    where: agentId ? { package: { agentId } } : undefined,
+    where: agentId
+      ? { package: { agentId, isDeleted: false } }
+      : undefined,
   });
 
   return grouped
@@ -29,8 +31,11 @@ const getBookingsByStatus = async (
 };
 
 // Revenue trend: one row per day for the last `days` days, bucketing COMPLETED
-// bookings by their createdAt. Postgres generate_series guarantees a dense
-// series (zero-filled days) — better and faster than a per-day JS loop.
+// bookings by their `updatedAt` — the timestamp of the transition into
+// COMPLETED (a terminal state, so it is the last write). `createdAt` is when
+// the booking was made (PENDING) and never moves, which would mis-date revenue
+// weeks later. Postgres generate_series guarantees a dense series (zero-filled
+// days) — better and faster than a per-day JS loop.
 const getRevenueOverTime = async (
   days: number,
   agentId?: string,
@@ -40,6 +45,7 @@ const getRevenueOverTime = async (
          SELECT p."id"
          FROM "tour_packages" p
          WHERE p."agentId" = $2
+           AND p."isDeleted" = false
        )`
     : "";
 
@@ -55,7 +61,7 @@ const getRevenueOverTime = async (
       '1 day'::interval
     ) AS days(d)
     LEFT JOIN "bookings" b
-      ON date_trunc('day', b."createdAt")::date = days.d
+      ON date_trunc('day', b."updatedAt")::date = days.d
       AND b."status" = 'COMPLETED'
       ${scope}
     GROUP BY days.d
@@ -68,10 +74,15 @@ const getRevenueOverTime = async (
   return rows;
 };
 
+// Package-id scope for booking queries. Callers short-circuit the empty case
+// (an agent with no packages), but an `in: []` fallback keeps the type
+// non-nullable while still matching nothing if it ever slips through.
 const toPackageIdScope = (
   packageIds: string[],
-): Prisma.BookingWhereInput | undefined =>
-  packageIds.length ? { packageId: { in: packageIds } } : undefined;
+): Prisma.BookingWhereInput =>
+  packageIds.length
+    ? { packageId: { in: packageIds } }
+    : { packageId: { in: [] } };
 
 // 1. Admin dashboard — platform-wide counts, breakdowns and revenue trend.
 const getAdminDashboard = async (days: number): Promise<IAdminDashboard> => {
@@ -160,6 +171,21 @@ const getAgentDashboard = async (
   ]);
 
   const packageIds = ownedPackages.map((p) => p.id);
+
+  // An agent with no packages must see zeros — scope is undefined for an empty
+  // list, and a bare `where: undefined` / `AND: [{}]` would otherwise match the
+  // whole platform (cross-agent data leak). Short-circuit here instead.
+  if (packageIds.length === 0) {
+    return {
+      totalPackages: 0,
+      totalBookings: 0,
+      totalRevenue: 0,
+      averageRating: Math.round((averageRating._avg.rating ?? 0) * 10) / 10,
+      bookingsByStatus,
+      revenueOverTime: await getRevenueOverTime(days, userId),
+    };
+  }
+
   const scope = toPackageIdScope(packageIds);
 
   const [totalPackages, totalBookings, totalRevenue, revenueOverTime] =
@@ -169,7 +195,7 @@ const getAgentDashboard = async (
       prisma.booking.aggregate({
         _sum: { totalPrice: true },
         where: {
-          AND: [scope ?? {}, { status: BookingStatus.COMPLETED }],
+          AND: [scope, { status: BookingStatus.COMPLETED }],
         },
       }),
       getRevenueOverTime(days, userId),
