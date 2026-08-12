@@ -124,7 +124,7 @@ const changeRole = async (id: string, payload: IChangeRole) => {
 
   const updatedUser = await prisma.user.update({
     where: { id },
-    data: { role },
+    data: { role, tokenVersion: { increment: 1 } },
     omit: { password: true },
   });
 

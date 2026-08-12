@@ -35,19 +35,11 @@ const auth = (...requiredRoles: Role[]) => {
       throw new AppError(401, verifiedToken.error);
     }
 
-    const { id, role, tokenVersion } = verifiedToken.data as JwtPayload & {
+    const { id, tokenVersion } = verifiedToken.data as JwtPayload & {
       tokenVersion: number;
     };
 
-    // 3. role must be in the required roles list
-    if (requiredRoles.length && !requiredRoles.includes(role as Role)) {
-      throw new AppError(
-        403,
-        "You are not authorized to access this route.",
-      );
-    }
-
-    // 4. re-fetch user to enforce account state on every request
+    // 3. re-fetch user to enforce account state on every request
     const user = await prisma.user.findUnique({
       where: { id },
     });
@@ -63,11 +55,19 @@ const auth = (...requiredRoles: Role[]) => {
       );
     }
 
-    // 5. tokenVersion must match DB (logout / password change kills old tokens)
+    // 4. tokenVersion must match DB (logout / password change kills old tokens)
     if (user.tokenVersion !== tokenVersion) {
       throw new AppError(
         401,
         "Session is no longer valid. Please login again.",
+      );
+    }
+
+    // 5. authorization uses the DB role, not the (possibly stale) JWT role
+    if (requiredRoles.length && !requiredRoles.includes(user.role)) {
+      throw new AppError(
+        403,
+        "You are not authorized to access this route.",
       );
     }
 

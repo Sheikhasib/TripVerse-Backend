@@ -3,6 +3,7 @@ import httpStatus from "http-status";
 import multer from "multer";
 import { ZodError } from "zod";
 import { Prisma } from "../../generated/prisma/client";
+import config from "../config";
 import { AppError } from "../utils/appError";
 
 const globalErrorHandler = (
@@ -11,7 +12,9 @@ const globalErrorHandler = (
   res: Response,
   next: NextFunction,
 ) => {
-  console.log("Error:", err);
+  if (config.node_env !== "production") {
+    console.error("Error:", err);
+  }
 
   // default fallback
   let statusCode: number = httpStatus.INTERNAL_SERVER_ERROR;

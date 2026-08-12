@@ -207,7 +207,8 @@ const demoLogin = async (payload: IDemoLoginPayload) => {
 
   const demoUser = await prisma.user.upsert({
     where: { email: `demo-${role.toLowerCase()}@tripverse.com` },
-    update: {},
+    // resurrect demo accounts that an admin suspended or soft-deleted
+    update: { status: "ACTIVE", isDeleted: false },
     create: {
       name: `Demo ${role.charAt(0) + role.slice(1).toLowerCase()}`,
       email: `demo-${role.toLowerCase()}@tripverse.com`,
