@@ -19,6 +19,7 @@ Files are numbered in the order you build them — each step depends on the one 
 13. `13-seed-script.md` — demo data so the frontend has something real to render
 14. `14-deployment.md` — host, env vars, live link
 15. `15-backlog-summary.md` — everything explicitly cut from MVP, for later
+16. `16-payment-module.md` — SSLCommerz payment gateway (checkout, IPN, booking PAID status)
 
 Finish and test one file before opening the next.
 

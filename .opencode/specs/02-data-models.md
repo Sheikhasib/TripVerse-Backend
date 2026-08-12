@@ -24,7 +24,7 @@ Everything downstream depends on this — build it fully before touching any mod
 - Deleting a category is blocked (409) while any package references it — checked in the category module, not the DB. `@@map("categories")`.
 
 ### Booking
-`id, userId, packageId, travelDate, travelers, totalPrice, status(PENDING/CONFIRMED/CANCELLED/COMPLETED), timestamps`
+`id, userId, packageId, travelDate, travelers, totalPrice, status(PENDING/PAID/CONFIRMED/CANCELLED/COMPLETED), timestamps`
 
 - `@@index([userId])`, `@@index([packageId])`, `@@index([status])` — used by my-bookings, agent-bookings, and dashboard aggregation queries.
 - Status transitions are a fixed state machine — see Step 9 (booking module).
@@ -53,8 +53,8 @@ No separate `Image` model for MVP — `images[]` on `TourPackage` is enough. Pro
 ### [LATER] Wishlist
 `id, userId, packageId, timestamps` — simple join table, ~30 min to add later
 
-### [LATER] Payment
-`id, bookingId, gateway(SSLCommerz), transactionId, amount, status, timestamps` — real payment gateway integration, mirrors GearUp's SSLCommerz pattern
+### Payment — **built** (Step 16)
+`id, bookingId, tranId(@unique), valId, amount, currency(BDT default), status(INITIATED/SUCCESS/FAILED/CANCELLED/REFUNDED), gatewayPageUrl, sslSessionKey, cardType, bankTranId, paidAt, timestamps` — SSLCommerz integration, mirrors GearUp. One booking can carry many payment attempts; a `SUCCESS` row flips the booking to `PAID`.
 
 ### [LATER] Notification
 `id, userId, type, message, isRead, timestamps` — booking confirmed/rejected, package approved/rejected
