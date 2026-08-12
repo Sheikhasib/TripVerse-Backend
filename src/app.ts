@@ -17,6 +17,7 @@ import { reviewRoutes } from "./modules/review/review.route";
 import { categoryRoutes } from "./modules/category/category.route";
 import { packageRoutes } from "./modules/package/package.route";
 import { blogRoutes } from "./modules/blog/blog.route";
+import { dashboardRoutes } from "./modules/dashboard/dashboard.route";
 
 const app: Application = express();
 
@@ -107,7 +108,7 @@ app.use("/api/packages", packageRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/blog", blogRoutes);
-// app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/dashboard", dashboardRoutes);
 
 app.use(notFoundHandler);
 app.use(globalErrorHandler);
