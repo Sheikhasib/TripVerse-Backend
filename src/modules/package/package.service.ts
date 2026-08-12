@@ -30,6 +30,19 @@ const validateCategory = async (categoryId: string) => {
   }
 };
 
+// Packages must be owned by a live AGENT — otherwise the booking state
+// machine's "AGENT (owns package)" branch and agent-bookings scoping break.
+const validateAgent = async (agentId: string) => {
+  const agent = await prisma.user.findUnique({
+    where: { id: agentId },
+    select: { id: true, role: true, isDeleted: true },
+  });
+
+  if (!agent || agent.role !== Role.AGENT || agent.isDeleted) {
+    throw new AppError(400, "Invalid agentId");
+  }
+};
+
 // Collision-safe slug: base slug from the title, then `-2`, `-3`, ... using a
 // single prefix query. Pure-Bangla/emoji titles can't slugify — fall back to
 // `package-<shortId>` so the URL is always meaningful.
@@ -62,7 +75,12 @@ const createPackage = async (user: IRequestUser, payload: ICreatePackagePayload)
   // owns what they create and may not impersonate another user.
   let agentId: string;
   if (user.role === Role.ADMIN) {
-    agentId = payload.agentId ?? user.id;
+    if (payload.agentId) {
+      await validateAgent(payload.agentId);
+      agentId = payload.agentId;
+    } else {
+      agentId = user.id;
+    }
   } else {
     if (payload.agentId) {
       throw new AppError(400, "agentId can only be set by an admin");
@@ -295,7 +313,13 @@ const changePackageStatus = async (
   packageId: string,
   payload: IUpdateStatusPayload,
 ) => {
-  await prisma.tourPackage.findUniqueOrThrow({ where: { id: packageId } });
+  const tourPackage = await prisma.tourPackage.findUniqueOrThrow({
+    where: { id: packageId },
+  });
+
+  if (tourPackage.isDeleted) {
+    throw new AppError(400, "Cannot change the status of a deleted package.");
+  }
 
   const updated = await prisma.tourPackage.update({
     where: { id: packageId },

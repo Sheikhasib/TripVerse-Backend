@@ -15,11 +15,11 @@ router.post(
   bookingController.createBooking,
 );
 
-// My bookings — own bookings with filters + pagination
+// My bookings — own bookings with filters + pagination (owner is always USER)
 // NOTE: registered before "/:id" so the param route doesn't swallow it.
 router.get(
   "/my-bookings",
-  auth(),
+  auth(Role.USER),
   validateRequest({ query: bookingValidations.bookingQuerySchema }),
   bookingController.getMyBookings,
 );
