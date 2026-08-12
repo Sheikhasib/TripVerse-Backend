@@ -17,5 +17,6 @@ model Booking {
   @@index([userId])
   @@index([packageId])
   @@index([status])
+  @@index([userId, packageId, travelDate])
   @@map("bookings")
 }

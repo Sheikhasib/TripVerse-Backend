@@ -1,4 +1,5 @@
 import { Resend } from "resend";
+import { BookingStatus } from "../../generated/prisma/enums";
 import config from "../config";
 
 export interface IContactEmailDetails {
@@ -116,6 +117,93 @@ export const sendContactAutoReply = async (
     to: [details.email],
     replyTo: receiverEmail,
     subject: "We received your message - TripVerse",
+    html: emailLayout(content),
+  });
+};
+
+// ── Booking emails ─────────────────────────────────────────────────────────
+export interface IBookingEmailDetails {
+  email: string;
+  name: string;
+  packageTitle: string;
+  travelDate: Date;
+  travelers: number;
+  totalPrice: number;
+  status: BookingStatus;
+}
+
+// Informs the customer about a booking create/confirm/cancel.
+// Best-effort like the contact emails — a failure must never fail the request.
+export const sendBookingEmail = async (
+  details: IBookingEmailDetails,
+): Promise<void> => {
+  const client = getResend();
+  if (!client || !details.email) {
+    console.warn("[email] Resend not configured; skipping booking email.");
+    return;
+  }
+
+  const from = config.email_from || "TripVerse <onboarding@resend.dev>";
+  const travelDate = details.travelDate.toISOString().slice(0, 10);
+
+  const statusCopy: Record<
+    BookingStatus,
+    { subject: string; heading: string; body: string }
+  > = {
+    [BookingStatus.PENDING]: {
+      subject: "Booking received - TripVerse",
+      heading: "Booking received",
+      body: "We've received your booking request. The agent will confirm it shortly.",
+    },
+    [BookingStatus.CONFIRMED]: {
+      subject: "Booking confirmed - TripVerse",
+      heading: "Booking confirmed",
+      body: "Great news — your booking has been confirmed. We look forward to hosting you!",
+    },
+    [BookingStatus.CANCELLED]: {
+      subject: "Booking cancelled - TripVerse",
+      heading: "Booking cancelled",
+      body: "Your booking has been cancelled. If this wasn't expected, please contact support.",
+    },
+    [BookingStatus.COMPLETED]: {
+      subject: "Trip completed - TripVerse",
+      heading: "Trip completed",
+      body: "Your trip has been marked as completed. Thank you for travelling with TripVerse!",
+    },
+  };
+
+  const copy = statusCopy[details.status];
+
+  const content = `
+    <h2 style="margin-top: 0; font-size: 18px;">${copy.heading}</h2>
+    <p style="font-size: 14px; line-height: 1.6; color: #374151;">
+      Hi ${escapeHtml(details.name)},<br/>
+      ${copy.body}
+    </p>
+    <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280; width: 120px;">Package</td>
+        <td style="padding: 8px 0;"><strong>${escapeHtml(details.packageTitle)}</strong></td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Travel date</td>
+        <td style="padding: 8px 0;">${escapeHtml(travelDate)}</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Travelers</td>
+        <td style="padding: 8px 0;">${escapeHtml(String(details.travelers))}</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Total</td>
+        <td style="padding: 8px 0;"><strong>$${escapeHtml(details.totalPrice.toFixed(2))}</strong></td>
+      </tr>
+    </table>
+  `;
+
+  await client.emails.send({
+    from,
+    to: [details.email],
+    subject: copy.subject,
     html: emailLayout(content),
   });
 };

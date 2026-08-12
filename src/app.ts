@@ -12,6 +12,10 @@ import { authRoutes } from "./modules/auth/auth.route";
 import { userRoutes } from "./modules/user/user.route";
 import { uploadRoutes } from "./modules/uploads/uploads.route";
 import { contactRoutes } from "./modules/contact/contact.route";
+import { bookingRoutes } from "./modules/booking/booking.route";
+import { reviewRoutes } from "./modules/review/review.route";
+import { categoryRoutes } from "./modules/category/category.route";
+import { packageRoutes } from "./modules/package/package.route";
 
 const app: Application = express();
 
@@ -97,9 +101,10 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/contact", contactRoutes);
-// app.use("/api/packages", packageRoutes);
-// app.use("/api/bookings", bookingRoutes);
-// app.use("/api/reviews", reviewRoutes);
+app.use("/api/categories", categoryRoutes);
+app.use("/api/packages", packageRoutes);
+app.use("/api/reviews", reviewRoutes);
+app.use("/api/bookings", bookingRoutes);
 // app.use("/api/dashboard", dashboardRoutes);
 
 app.use(notFoundHandler);
