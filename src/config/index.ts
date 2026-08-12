@@ -30,6 +30,12 @@ const envSchema = z.object({
   // returns a clean 400 until GOOGLE_CLIENT_ID is configured.
   GOOGLE_CLIENT_ID: z.string().optional(),
 
+  // Best-effort contact emails (Resend) — always optional; submissions
+  // succeed and emails become no-ops when these are missing.
+  RESEND_API_KEY: z.string().optional(),
+  CONTACT_RECEIVER_EMAIL: z.string().email().optional(),
+  EMAIL_FROM: z.string().optional(),
+
   CLOUDINARY_CLOUD_NAME: z.string().min(1, "CLOUDINARY_CLOUD_NAME is required"),
   CLOUDINARY_API_KEY: z.string().min(1, "CLOUDINARY_API_KEY is required"),
   CLOUDINARY_API_SECRET: z.string().min(1, "CLOUDINARY_API_SECRET is required"),
@@ -62,6 +68,10 @@ const config = {
   jwt_refresh_expires_in: env.JWT_REFRESH_EXPIRES_IN,
 
   google_client_id: env.GOOGLE_CLIENT_ID,
+
+  resend_api_key: env.RESEND_API_KEY,
+  contact_receiver_email: env.CONTACT_RECEIVER_EMAIL,
+  email_from: env.EMAIL_FROM,
 
   cloudinary_cloud_name: env.CLOUDINARY_CLOUD_NAME,
   cloudinary_api_key: env.CLOUDINARY_API_KEY,
