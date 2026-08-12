@@ -5,9 +5,18 @@ import { slugify } from "../../utils/slugify";
 import { ICreateCategory, IUpdateCategory } from "./category.interface";
 
 // Friendly 409 for @unique conflicts (name or slug) instead of a raw P2002.
-const assertNameAvailable = async (name: string, slug: string) => {
+// excludeId lets updates skip the very row being edited so a no-op rename
+// doesn't false-409 against itself.
+const assertNameAvailable = async (
+  name: string,
+  slug: string,
+  excludeId?: string,
+) => {
   const existing = await prisma.category.findFirst({
-    where: { OR: [{ name }, { slug }] },
+    where: {
+      OR: [{ name }, { slug }],
+      ...(excludeId ? { NOT: { id: excludeId } } : {}),
+    },
   });
 
   if (existing) {
@@ -52,7 +61,7 @@ const updateCategory = async (categoryId: string, payload: IUpdateCategory) => {
   const slug = slugify(name);
 
   await prisma.category.findUniqueOrThrow({ where: { id: categoryId } });
-  await assertNameAvailable(name, slug);
+  await assertNameAvailable(name, slug, categoryId);
 
   return prisma.category.update({
     where: { id: categoryId },
