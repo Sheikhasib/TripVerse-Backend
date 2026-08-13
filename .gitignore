@@ -33,3 +33,5 @@ logs
 # ad-hoc smoke/test scripts
 tmp-*.ts
 
+
+.vercel
