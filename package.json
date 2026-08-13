@@ -7,7 +7,9 @@
     "start": "node ./dist/server.js",
     "dev": "tsx watch src/server.ts",
     "build": "tsup",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build:vercel": "node esbuild.vercel.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepare": "husky"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -25,6 +27,7 @@
     "@types/multer": "^1.4.13",
     "@types/node": "^26.1.0",
     "@types/pg": "^8.20.0",
+    "husky": "^9.1.7",
     "prisma": "^7.8.0",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3"

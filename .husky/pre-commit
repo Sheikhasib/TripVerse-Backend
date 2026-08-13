@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+
+# Auto-rebuild the Vercel bundle whenever src/ code changes, so the committed
+# api/index.js always matches the latest source. Prevents stale deployments.
+if git diff --cached --name-only | grep -q "^src/"; then
+  echo "src/ changed — rebuilding api/index.js bundle..."
+  node esbuild.vercel.mjs
+  if [ $? -ne 0 ]; then
+    echo "esbuild failed — aborting commit"
+    exit 1
+  fi
+  git add api/index.js
+fi
