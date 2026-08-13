@@ -4,7 +4,10 @@ import config from "../config";
 
 const connectionString = config.database_url;
 
-const adapter = new PrismaPg({ connectionString });
+// Serverless-friendly pool: one connection per warm instance so many
+// concurrent invocations can't exhaust the database's connection limit.
+// Local/VM runs are unaffected (a single process uses one connection anyway).
+const adapter = new PrismaPg({ connectionString, max: 1 });
 const prisma = new PrismaClient({ adapter });
 
 export { prisma };
