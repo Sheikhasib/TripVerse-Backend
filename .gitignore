@@ -33,8 +33,4 @@ logs
 # ad-hoc smoke/test scripts
 tmp-*.ts
 
-# vercel build artifact
-api/index.js
-api/index.js.map
-
 .vercel
