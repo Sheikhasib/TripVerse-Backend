@@ -27,8 +27,16 @@ Verify with `GET /health` → `{ success: true, db: "connected" }`.
 | `npx prisma generate` | Regenerate client from schema |
 | `npx prisma migrate dev --name <name>` | Create/apply a migration |
 | `npx prisma db seed` | Run `prisma/seed.ts` (exists in package config; script not built yet) |
+| `npm run build:vercel` | Manually rebuild `api/index.js` bundle (auto via pre-commit hook) |
 
 `prisma.config.ts` supplies the schema path, so **no `--schema=` flag is needed**. Use `npx tsc --noEmit` for a typecheck.
+
+## Vercel deployment
+
+- Deployed to `https://tripverse-server.vercel.app` from `main` (Git-based). Root is `api/index.js` — a **single esbuild bundle** of the app (`src/app.ts` re-export), built by `esbuild.vercel.mjs`. `vercel.json` routes `/(.*)` to it; `installCommand` runs `npx prisma generate` (since `generated/` is gitignored).
+- **The bundle is committed to git.** `@vercel/node` does NOT bundle the `src/` tree itself (caused `ERR_MODULE_NOT_FOUND` before), so the committed `api/index.js` must always match `src/`.
+- A **husky pre-commit hook** (`.husky/pre-commit`) auto-runs `node esbuild.vercel.mjs` and re-stages `api/index.js` whenever a `src/` file is committed — so bundle staleness is prevented automatically. You can also run `npm run build:vercel` manually.
+- Env vars come from the **Vercel dashboard**, NOT `.env` (gitignored). Production needs `DATABASE_URL`, both JWT secrets, Cloudinary ×3, `BACKEND_PUBLIC_URL` (Vercel URL). `FRONTEND_URL_PROD` stays unset until the frontend is live.
 
 ## Architecture
 
