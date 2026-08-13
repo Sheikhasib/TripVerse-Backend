@@ -71,38 +71,42 @@ model Payment {
 
 Thin typed wrapper over native `fetch` — **no new npm dependency**.
 
-- Base URL from `SSLCOMMERZ_SANDBOX`: sandbox `https://sandbox.sslcommerz.com`, live
-  `https://securepay.sslcommerz.com`
-- `initSession(params)` — `POST /gwprocess/v4/api.php` (form-encoded):
+- Gateway/validator URLs come from `SSLCOMMERZ_INIT_URL` / `SSLCOMMERZ_VALIDATE_URL` (GearUp pattern);
+  when absent they default off `SSL_COMMERZ_SANDBOX` (sandbox `https://sandbox.sslcommerz.com`, live
+  `https://securepay.sslcommerz.com`).
+- `sslcommerzInit(options)` — `POST {init_url}/gwprocess/v4/api.php` (form-encoded):
   `store_id, store_passwd, total_amount, currency=BDT, tran_id, success_url, fail_url, cancel_url,
-  ipn_url, cus_name, cus_email, cus_phone, product_name, product_category, product_profile=general,
-  shipping_method=NO`. Returns `{ status: "SUCCESS", GatewayPageURL, sessionkey }` or
-  `{ status: "FAILED", FailedReason }`.
-- `validateTransaction(valId)` — `GET /validator/api/validationserverAPI.php?val_id&store_id
-  &store_passwd&format=json` → `{ status, amount, currency, tran_id, card_type, bank_tran_id, ... }`.
-  Give it an `AbortSignal` timeout (~10s) and surface a timeout as a clean `502`.
-- `tran_id` is generated server-side: `TV-<Date.now()>-<crypto.randomUUID().slice(0,8)>` — the client
-  never supplies it.
-- `cus_phone` is `user.phone ?? ""` (sandbox accepts empty).
+  ipn_url, cus_name, cus_email, cus_add1="N/A", cus_add2="N/A", cus_city="N/A", cus_state="N/A",
+  cus_postcode=1000, cus_country="Bangladesh", cus_phone, product_name, shipping_method=NO`.
+  Returns `{ status, GatewayPageURL, sessionkey }`; non-success → throw (clean 502 path in service).
+- `sslcommerzValidate({ val_id })` — `GET {validate_url}?val_id&store_id&store_passwd&format=json` →
+  `{ status: "VALID"|"VALIDATED"|"INVALID_TRANSACTION"|"FAILED", amount, currency, card_type,
+  bank_tran_id, ... }`. Parsed defensively (gateway edge cases can return unexpected shapes).
+- `tran_id` is generated server-side: `TRNX_ID-<Date.now()>-<randomUUID().slice(0,8)>` (≤30 chars, the
+  gateway's hard limit). The client never supplies it.
 
 ## Config & env — `src/config/index.ts`, `.env.example`
 
-- Required: `SSLCOMMERZ_STORE_ID`, `SSLCOMMERZ_STORE_PASSWORD`
-- Defaults: `SSLCOMMERZ_SANDBOX=true`; `SSLCOMMERZ_SUCCESS_URL` / `_FAIL_URL` / `_CANCEL_URL` fall back
-  to `<frontend_url_dev|prod>/payment/{success|fail|cancel}` picked off `NODE_ENV`; `SSLCOMMERZ_IPN_URL`
-  optional — when unset, `ipn_url` is omitted from the init payload and async confirmation relies on
-  the verify endpoint.
+- Required: `SSL_COMMERZ_STORE_ID`, `SSL_COMMERZ_STORE_PASSWORD`, `BACKEND_PUBLIC_URL`
+- Defaults: `SSL_COMMERZ_SANDBOX=true` (switches to live gateway URLs); `SSLCOMMERZ_INIT_URL` /
+  `SSLCOMMERZ_VALIDATE_URL` optional overrides (GearUp pattern).
+- `BACKEND_PUBLIC_URL` is the publicly reachable base the module builds the success/fail/cancel/IPN
+  callback URLs from. **Must not be localhost in sandbox** — the gateway POSTs to it server-to-server.
+- Frontend redirect target (`/payment/{success|fail|cancel}?bookingId=`) is picked off `NODE_ENV`
+  (`frontend_url_prod` vs `frontend_url_dev`).
 
 ## Endpoints — `/api/payments`
 
 ```
-POST  /initiate       auth(USER)      body { bookingId }      → { gatewayPageUrl, tranId }
-POST  /:id/verify     auth(USER)      post-redirect confirm   → payment + booking (receipt data)
-POST  /ipn            PUBLIC          form-encoded from SSLCommerz (no auth, no JSON envelope)
+POST  /create    auth(USER)      JSON { bookingId }        → { paymentId, tranId, paymentUrl }
+POST  /confirm   PUBLIC          form POST from SSLCommerz  → 302 to /payment/{success|fail|cancel}
+POST  /ipn       PUBLIC          form POST from SSLCommerz  → 200 text/plain ("OK")
 ```
 
-- `/initiate` and `/ipn` are registered **before** `/:id/verify` (Express 5 param precedence — same
-  pattern as booking `my-bookings` before `/:id`).
+- `/create` is registered before the static `/confirm` + `/ipn` paths (Express 5 static-beats-param);
+  there is no `/:id` route.
+- `/confirm` and `/ipn` accept the gateway's `application/x-www-form-urlencoded` POST (the global
+  `express.urlencoded` middleware parses it) and share the same idempotent `processGatewayResult`.
 - Receipt view comes from Step 9's `GET /api/bookings/:id`, whose response gains a `payments` array —
   no separate payment GET endpoint.
 
@@ -110,33 +114,30 @@ POST  /ipn            PUBLIC          form-encoded from SSLCommerz (no auth, no 
 
 1. **Book** — `POST /api/bookings` (unchanged, Step 9) creates the `PENDING` booking with a
    server-computed `totalPrice`.
-2. **Initiate** — frontend calls `POST /api/payments/initiate` right after a 201:
+2. **Create session** — frontend calls `POST /api/payments/create` right after a 201:
    - Booking must exist and be owned by `req.user` (`booking.userId === req.user.id`) → else 403.
-   - Booking must be `PENDING`; if `CANCELLED` → 400 "not payable", if already `PAID`/`CONFIRMED`/
-     `COMPLETED` → 409 "already paid".
-   - Session guard inside one transaction: an existing `SUCCESS` payment → 409 "already paid"; an
-     `INITIATED` payment younger than the TTL (constant `PAYMENT_SESSION_TTL_MINUTES = 30`) → 409 "a
-     payment session is already active"; an `INITIATED` payment **older** than the TTL → flip to
-     `CANCELLED` and open a fresh session (mirrors Step 9's stale-PENDING handling).
-   - Create `Payment` (`tranId`, `amount = booking.totalPrice`, BDT, `INITIATED`), call `initSession`,
-     persist `gatewayPageUrl` + `sslSessionKey`. Init failure → payment `FAILED`, rethrow as `502`.
-   - Return `{ gatewayPageUrl, tranId }`.
-3. **Redirect** — user pays on the SSLCommerz page; SSLCommerz posts to the IPN URL (async) and
-   redirects the browser to `success_url`/`fail_url`/`cancel_url`.
-4. **Verify** — the success page calls `POST /api/payments/:id/verify`:
-   - Payment must belong to `req.user` (resolve booking owner) → else 403/404.
-   - Already `SUCCESS` → idempotent 200 (an IPN may have won the race / double submit).
-   - Otherwise `validateTransaction(valId)`; require `status VALID|VALIDATED`, `tran_id ===
-     payment.tranId`, and `amount === payment.amount` (exact 2-dp BDT). Any mismatch → payment
-     `FAILED`, respond 400 "payment could not be verified".
-   - On valid: set `SUCCESS` (`paidAt`, `cardType`, `bankTranId`), then flip `booking` `PENDING → PAID`
-     via **compare-and-set** — `updateMany({ where: { id, status: PENDING }, data })` inside the same
-     transaction, `count === 0` → treat as already-processed (idempotent no-op), so a racing IPN can't
-     double-process.
-5. **IPN** — `POST /api/payments/ipn`: look up payment by `tran_id`, run the same `continuePayment(...)`
-   helper used by verify (compare-and-set makes both paths safe). Always answer **200 plain text**
-   (SSLCommerz retries otherwise) — no `sendResponse` envelope on this route. Never trust the raw IPN
-   body; every status change goes through the validator + amount check.
+   - Booking must be `PENDING`; already `PAID` → 409 "already paid"; `CANCELLED`/`CONFIRMED`/
+     `COMPLETED` → 409 "not payable".
+   - Any outstanding `INITIATED` session for this booking is flipped to `CANCELLED` first, then a fresh
+     `Payment` row (`tranId`, `amount = booking.totalPrice`, BDT) is created and `sslcommerzInit` called.
+     Init failure → `FAILED` row + rethrow.
+   - Return `{ paymentId, tranId, paymentUrl: GatewayPageURL }`.
+3. **Redirect** — user pays on the SSLCommerz page; SSLCommerz fires the IPN (async) and POSTs to
+   `success_url` / `fail_url` / `cancel_url` (distinguished by the `?status=success|fail|cancel` query
+   the module appended).
+4. **Confirm** — `POST /api/payments/confirm` settles and then `302`s the browser to the frontend
+   `/payment/{success|fail|cancel}?bookingId=` page:
+   - `status=CANCEL`/`fail_status=CANCELLED` → payment → `CANCELLED`, no charge.
+   - Fail (no `val_id`) → payment → `FAILED`.
+   - Success (has `val_id`) → server-side `sslcommerzValidate`: require `status VALID|VALIDATED` **and**
+     `amount === payment.amount` (exact 2-dp BDT). Mismatch/unreachable → payment `FAILED`, no booking
+     change. Verified → payment `SUCCESS` (`paidAt`, `cardType`, `bankTranId`, `valId`), then flip
+     booking `PENDING → PAID` via **compare-and-set** (`updateMany` `where { id, status: PENDING }`)
+     inside the same transaction — a racing IPN or stale booking can't double-process.
+5. **IPN** — `POST /api/payments/ipn`: same `processGatewayResult` helper (compare-and-set makes both
+   paths safe and idempotent). Always answers **200 plain text** (SSLCommerz retries otherwise) — no
+   `sendResponse` envelope on this route. Never trusts the raw IPN body; every status change goes
+   through the validator + amount check.
 
 ## Booking state machine — extended in `booking.service.ts`
 
@@ -220,14 +221,14 @@ None (native `fetch`; `express.urlencoded` already parses the IPN form post).
 
 - `npx prisma migrate dev --name add_payment_module` applies cleanly; `npx tsc --noEmit` passes.
 - Modules wired into `src/app.ts`; `npm run dev` boots and `GET /health` OK.
-- With sandbox store creds in `.env`:
-  - Create a booking, then `POST /api/payments/initiate` → returns a sandbox `gatewayPageUrl`; payment
-    row is `INITIATED`. A second `/initiate` → 409. Initiating for a `CANCELLED` booking → 400.
-  - Pay on the sandbox gateway, call `POST /api/payments/:id/verify` → payment `SUCCESS`, booking `PAID`;
-    the sandbox IPN replay to `/api/payments/ipn` is a 200 idempotent no-op.
+- With sandbox store creds + a public `BACKEND_PUBLIC_URL` in `.env`:
+  - Create a booking, then `POST /api/payments/create` → returns a sandbox `paymentUrl`; payment row is
+    `INITIATED`. Creating again while a session is open flips the old session to `CANCELLED`. Creating
+    for a `CANCELLED` booking → 409.
+  - Pay on the sandbox gateway; `/api/payments/confirm` is POSTed by SSLCommerz → payment `SUCCESS`,
+    booking `PAID`, browser redirected to `/payment/success`. The sandbox IPN replay to
+    `/api/payments/ipn` is a 200 idempotent no-op.
   - Booking list/detail now includes `payments`; `?status=PAID` filter works.
   - AGENT(owner) moves `PAID → CONFIRMED`; after the travel date `CONFIRMED → COMPLETED`. USER cancels the
     `PAID` booking → booking `CANCELLED`, payment `REFUNDED`.
-  - An `INITIATED` session left past the TTL is auto-cancelled by the next `initiate`, which opens a fresh
-    session.
 - Commit + push this step (AGENTS.md workflow).

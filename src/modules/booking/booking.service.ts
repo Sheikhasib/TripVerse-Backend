@@ -1,5 +1,5 @@
 import { Prisma } from "../../../generated/prisma/client";
-import { BookingStatus, PackageStatus, Role } from "../../../generated/prisma/enums";
+import { BookingStatus, PackageStatus, PaymentStatus, Role } from "../../../generated/prisma/enums";
 import { prisma } from "../../lib/prisma";
 import { AppError } from "../../utils/appError";
 import { sendBookingEmail } from "../../utils/email";
@@ -54,6 +54,10 @@ const TRANSITIONS: Partial<
     [BookingStatus.CONFIRMED]: { allowed: isAgentOwnerOrAdmin },
     [BookingStatus.CANCELLED]: { allowed: canManage },
   },
+  [BookingStatus.PAID]: {
+    [BookingStatus.CONFIRMED]: { allowed: isAgentOwnerOrAdmin },
+    [BookingStatus.CANCELLED]: { allowed: canManage },
+  },
   [BookingStatus.CONFIRMED]: {
     [BookingStatus.COMPLETED]: {
       allowed: isAgentOwnerOrAdmin,
@@ -94,6 +98,20 @@ const bookingPackageDetailSelect = {
 
 const bookingUserSelect = {
   select: { id: true, name: true, email: true },
+} as const;
+
+// Payment ledger shown on the booking detail page (amounts stay Decimal in DB).
+const bookingPaymentSelect = {
+  select: {
+    id: true,
+    tranId: true,
+    amount: true,
+    currency: true,
+    status: true,
+    cardType: true,
+    bankTranId: true,
+    paidAt: true,
+  },
 } as const;
 
 type BookingWitPackage = Prisma.BookingGetPayload<{
@@ -266,7 +284,11 @@ const getAllBookings = async (query: IBookingSearchQuery) => {
 const getBookingDetail = async (id: string, actor: BookingActor) => {
   const booking = await prisma.booking.findUnique({
     where: { id },
-    include: { package: bookingPackageDetailSelect, user: bookingUserSelect },
+    include: {
+      package: bookingPackageDetailSelect,
+      user: bookingUserSelect,
+      payments: bookingPaymentSelect,
+    },
   });
 
   if (!booking) {
@@ -276,7 +298,10 @@ const getBookingDetail = async (id: string, actor: BookingActor) => {
     throw new AppError(403, "You are not authorized to view this booking.");
   }
 
-  return mapBookingList(booking);
+  return {
+    ...mapBookingList(booking),
+    payments: booking.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+  };
 };
 
 // ── Status transition ───────────────────────────────────────────────────────
@@ -344,6 +369,20 @@ const updateBookingStatus = async (
         "Booking status changed concurrently. Please try again.",
       );
     }
+
+    // Cancelling a paid booking marks its money as returned (REFUNDED flag —
+    // the actual transfer is out of scope). Abandoned sessions are cancelled.
+    if (to === BookingStatus.CANCELLED) {
+      await tx.payment.updateMany({
+        where: { bookingId: id, status: PaymentStatus.SUCCESS },
+        data: { status: PaymentStatus.REFUNDED },
+      });
+      await tx.payment.updateMany({
+        where: { bookingId: id, status: PaymentStatus.INITIATED },
+        data: { status: PaymentStatus.CANCELLED },
+      });
+    }
+
     return tx.booking.findUnique({ where: { id } });
   });
 

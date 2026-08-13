@@ -155,6 +155,11 @@ export const sendBookingEmail = async (
       heading: "Booking received",
       body: "We've received your booking request. The agent will confirm it shortly.",
     },
+    [BookingStatus.PAID]: {
+      subject: "Payment received - TripVerse",
+      heading: "Payment received",
+      body: "Your payment has been received, and the agent will confirm your booking shortly.",
+    },
     [BookingStatus.CONFIRMED]: {
       subject: "Booking confirmed - TripVerse",
       heading: "Booking confirmed",

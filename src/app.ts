@@ -18,6 +18,7 @@ import { categoryRoutes } from "./modules/category/category.route";
 import { packageRoutes } from "./modules/package/package.route";
 import { blogRoutes } from "./modules/blog/blog.route";
 import { dashboardRoutes } from "./modules/dashboard/dashboard.route";
+import { paymentRoutes } from "./modules/payment/payment.route";
 
 const app: Application = express();
 
@@ -109,6 +110,7 @@ app.use("/api/reviews", reviewRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/blog", blogRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/payments", paymentRoutes);
 
 app.use(notFoundHandler);
 app.use(globalErrorHandler);

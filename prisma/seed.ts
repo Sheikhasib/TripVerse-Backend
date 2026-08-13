@@ -1,5 +1,5 @@
 import bcrypt from "bcryptjs";
-import { Role, UserStatus, PackageStatus, BookingStatus, PostStatus } from "../generated/prisma/enums";
+import { Role, UserStatus, PackageStatus, BookingStatus, PaymentStatus, PostStatus } from "../generated/prisma/enums";
 import { prisma } from "../src/lib/prisma";
 import config from "../src/config";
 
@@ -46,6 +46,7 @@ const main = async () => {
     async (tx) => {
       // ── 1. Reset (dependency order so FKs never block) ─────────────────
       await tx.review.deleteMany();
+      await tx.payment.deleteMany();
       await tx.booking.deleteMany();
       await tx.blogPost.deleteMany();
       await tx.tourPackage.deleteMany();
@@ -232,14 +233,24 @@ const main = async () => {
         { slug: "dhaka-heritage-city-walk", user: customers[2], travelers: 1, status: BookingStatus.PENDING, travel: daysFromNow(12), created: daysAgo(0), updated: daysAgo(0) },
         { slug: "sylhet-tea-garden-retreat", user: customers[1], travelers: 2, status: BookingStatus.PENDING, travel: daysFromNow(32), created: daysAgo(1), updated: daysAgo(1) },
         { slug: "st-martin-island-diving", user: demoUserId, travelers: 2, status: BookingStatus.PENDING, travel: daysFromNow(50), created: daysAgo(2), updated: daysAgo(2) },
+        // PAID — paid at checkout, awaiting agent confirmation
+        { slug: "coxs-bazar-beach-escape", user: customers[3], travelers: 2, status: BookingStatus.PAID, travel: daysFromNow(15), created: daysAgo(1), updated: daysAgo(0) },
+        { slug: "sundarbans-wildlife-expedition", user: demoUserId, travelers: 3, status: BookingStatus.PAID, travel: daysFromNow(45), created: daysAgo(0), updated: daysAgo(0) },
         // CANCELLED
         { slug: "coxs-bazar-beach-escape", user: customers[2], travelers: 1, status: BookingStatus.CANCELLED, travel: daysAgo(5), created: daysAgo(20), updated: daysAgo(3) },
         { slug: "st-martin-island-diving", user: customers[0], travelers: 4, status: BookingStatus.CANCELLED, travel: daysAgo(2), created: daysAgo(15), updated: daysAgo(1) },
         { slug: "bandarban-trekking-adventure", user: customers[1], travelers: 2, status: BookingStatus.CANCELLED, travel: daysAgo(6), created: daysAgo(25), updated: daysAgo(4) },
       ];
 
+      const createdBookings: {
+        id: string;
+        slug: string;
+        status: BookingStatus;
+        totalPrice: number;
+      }[] = [];
+
       for (const b of bookingSeeds) {
-        await tx.booking.create({
+        const created = await tx.booking.create({
           data: {
             userId: b.user,
             packageId: packageMap.get(b.slug)!,
@@ -249,6 +260,43 @@ const main = async () => {
             status: b.status,
             createdAt: b.created,
             updatedAt: b.updated,
+          },
+        });
+        createdBookings.push({
+          id: created.id,
+          slug: b.slug,
+          status: b.status,
+          totalPrice: Number(created.totalPrice),
+        });
+      }
+
+      // ── 5b. Payments (payment ledger demo, Step 16) ─────────────────────
+      // Mirror the booking flow: paid bookings (PAID/CONFIRMED/COMPLETED)
+      // carry SUCCESS entries, CANCELLED ones are REFUNDED (flag only — the
+      // actual money transfer is out of scope), PENDING sessions were started
+      // but never completed (INITIATED).
+      let seedPaymentIndex = 0;
+      for (const booking of createdBookings) {
+        const paymentStatus =
+          booking.status === BookingStatus.PENDING
+            ? PaymentStatus.INITIATED
+            : booking.status === BookingStatus.CANCELLED
+              ? PaymentStatus.REFUNDED
+              : PaymentStatus.SUCCESS;
+
+        await tx.payment.create({
+          data: {
+            bookingId: booking.id,
+            tranId: `SEED_TRN_${String(++seedPaymentIndex).padStart(2, "0")}`,
+            amount: booking.totalPrice,
+            status: paymentStatus,
+            ...(paymentStatus === PaymentStatus.SUCCESS
+              ? {
+                  cardType: "VISA",
+                  bankTranId: "SEED_BANK_TXN",
+                  paidAt: new Date(Date.now() - 1 * 86_400_000),
+                }
+              : {}),
           },
         });
       }
@@ -369,6 +417,7 @@ const main = async () => {
         categories: await tx.category.count(),
         packages: await tx.tourPackage.count(),
         bookings: await tx.booking.count(),
+        payments: await tx.payment.count(),
         reviews: await tx.review.count(),
         posts: await tx.blogPost.count(),
       };

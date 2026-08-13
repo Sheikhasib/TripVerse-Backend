@@ -26,6 +26,21 @@ const envSchema = z.object({
   ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_PASSWORD: z.string().min(1).optional(),
 
+  // SSLCommerz (Step 16) — sandbox store creds until go-live. SSL_COMMERZ_SANDBOX
+  // picks the sandbox vs live API base URL.
+  SSL_COMMERZ_STORE_ID: z.string().min(1, "SSL_COMMERZ_STORE_ID is required"),
+  SSL_COMMERZ_STORE_PASSWORD: z.string().min(1, "SSL_COMMERZ_STORE_PASSWORD is required"),
+  SSL_COMMERZ_SANDBOX: z.string().default("true"),
+  // Optional explicit gateway/validator base URLs (GearUp pattern). Defaults are
+  // derived from SSL_COMMERZ_SANDBOX when absent.
+  SSLCOMMERZ_INIT_URL: z.string().url().optional(),
+  SSLCOMMERZ_VALIDATE_URL: z.string().url().optional(),
+
+  // Publicly reachable base URL the payment module uses to build the
+  // SSLCommerz success/fail/cancel/IPN callback URLs. Must NOT be localhost in
+  // sandbox — the gateway POSTs to these server-to-server.
+  BACKEND_PUBLIC_URL: z.string().url(),
+
   JWT_ACCESS_SECRET: z.string().min(1, "JWT_ACCESS_SECRET is required"),
   JWT_REFRESH_SECRET: z.string().min(1, "JWT_REFRESH_SECRET is required"),
   JWT_ACCESS_EXPIRES_IN: z.string().default("1d"),
@@ -69,6 +84,22 @@ const config = {
 
   admin_email: env.ADMIN_EMAIL,
   admin_password: env.ADMIN_PASSWORD,
+
+  ssl_commerz_store_id: env.SSL_COMMERZ_STORE_ID,
+  ssl_commerz_store_password: env.SSL_COMMERZ_STORE_PASSWORD,
+  ssl_commerz_sandbox: env.SSL_COMMERZ_SANDBOX === "true",
+  // sandbox base URLs (fallback when the explicit override vars are absent)
+  sslcommerz_init_url:
+    env.SSLCOMMERZ_INIT_URL ??
+    (env.SSL_COMMERZ_SANDBOX === "true"
+      ? "https://sandbox.sslcommerz.com/gwprocess/v4/api.php"
+      : "https://securepay.sslcommerz.com/gwprocess/v4/api.php"),
+  sslcommerz_validate_url:
+    env.SSLCOMMERZ_VALIDATE_URL ??
+    (env.SSL_COMMERZ_SANDBOX === "true"
+      ? "https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php"
+      : "https://securepay.sslcommerz.com/validator/api/validationserverAPI.php"),
+  backend_public_url: env.BACKEND_PUBLIC_URL,
 
   jwt_access_secret: env.JWT_ACCESS_SECRET,
   jwt_refresh_secret: env.JWT_REFRESH_SECRET,

@@ -222,7 +222,9 @@ const getUserDashboard = async (userId: string): Promise<IUserDashboard> => {
     prisma.booking.findMany({
       where: {
         userId,
-        status: { in: [BookingStatus.PENDING, BookingStatus.CONFIRMED] },
+        status: {
+          in: [BookingStatus.PENDING, BookingStatus.PAID, BookingStatus.CONFIRMED],
+        },
         travelDate: { gt: new Date() },
       },
       select: {
