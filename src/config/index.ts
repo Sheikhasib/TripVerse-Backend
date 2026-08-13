@@ -27,9 +27,12 @@ const envSchema = z.object({
   ADMIN_PASSWORD: z.string().min(1).optional(),
 
   // SSLCommerz (Step 16) — sandbox store creds until go-live. SSL_COMMERZ_SANDBOX
-  // picks the sandbox vs live API base URL.
-  SSL_COMMERZ_STORE_ID: z.string().min(1, "SSL_COMMERZ_STORE_ID is required"),
-  SSL_COMMERZ_STORE_PASSWORD: z.string().min(1, "SSL_COMMERZ_STORE_PASSWORD is required"),
+  // picks the sandbox vs live API base URL. Optional so the API boots (health,
+  // auth, catalog, etc.) even when the payment store isn't configured yet — the
+  // payment endpoints then fail with a clean "not configured" error instead of
+  // taking the whole deployment down.
+  SSL_COMMERZ_STORE_ID: z.string().optional(),
+  SSL_COMMERZ_STORE_PASSWORD: z.string().optional(),
   SSL_COMMERZ_SANDBOX: z.string().default("true"),
   // Optional explicit gateway/validator base URLs (GearUp pattern). Defaults are
   // derived from SSL_COMMERZ_SANDBOX when absent.
@@ -38,8 +41,9 @@ const envSchema = z.object({
 
   // Publicly reachable base URL the payment module uses to build the
   // SSLCommerz success/fail/cancel/IPN callback URLs. Must NOT be localhost in
-  // sandbox — the gateway POSTs to these server-to-server.
-  BACKEND_PUBLIC_URL: z.string().url(),
+  // sandbox — the gateway POSTs to these server-to-server. Optional like the
+  // store creds above (payment-only).
+  BACKEND_PUBLIC_URL: z.string().url().optional(),
 
   JWT_ACCESS_SECRET: z.string().min(1, "JWT_ACCESS_SECRET is required"),
   JWT_REFRESH_SECRET: z.string().min(1, "JWT_REFRESH_SECRET is required"),

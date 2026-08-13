@@ -3,6 +3,28 @@ import { randomUUID } from "node:crypto";
 import config from "../config/index";
 import { AppError } from "../utils/appError";
 
+// Payment is an optional feature: the API must boot and serve everything else
+// even when the SSLCommerz store isn't configured yet. These throw a clean 400
+// on the payment-only paths rather than crash the whole deployment at boot.
+const requireConfig = () => {
+  if (!config.ssl_commerz_store_id || !config.ssl_commerz_store_password) {
+    throw new AppError(
+      400,
+      "SSLCommerz is not configured. Set SSL_COMMERZ_STORE_ID and SSL_COMMERZ_STORE_PASSWORD.",
+    );
+  }
+  if (!config.backend_public_url) {
+    throw new AppError(
+      400,
+      "SSLCommerz is not configured. Set BACKEND_PUBLIC_URL to the publicly reachable backend URL.",
+    );
+  }
+  return {
+    storeId: config.ssl_commerz_store_id,
+    storePassword: config.ssl_commerz_store_password,
+  };
+};
+
 export interface SslcommerzInitResult {
   status: string;
   failedreason?: string;
@@ -40,9 +62,10 @@ export async function sslcommerzInit(options: {
   cus_email: string;
   cus_phone: string;
 }): Promise<SslcommerzInitResult> {
+  const { storeId, storePassword } = requireConfig();
   const body = new URLSearchParams({
-    store_id: config.ssl_commerz_store_id,
-    store_passwd: config.ssl_commerz_store_password,
+    store_id: storeId,
+    store_passwd: storePassword,
     total_amount: options.total_amount.toFixed(2),
     currency: "BDT",
     tran_id: options.tran_id,
@@ -91,10 +114,11 @@ export async function sslcommerzInit(options: {
 export async function sslcommerzValidate(options: {
   val_id: string;
 }): Promise<SslcommerzValidationResult> {
+  const { storeId, storePassword } = requireConfig();
   const params = new URLSearchParams({
     val_id: options.val_id,
-    store_id: config.ssl_commerz_store_id,
-    store_passwd: config.ssl_commerz_store_password,
+    store_id: storeId,
+    store_passwd: storePassword,
     format: "json",
   });
 
