@@ -21,6 +21,11 @@ const envSchema = z.object({
 
   BCRYPT_SALT_ROUNDS: z.string().default("10"),
 
+  // Optional admin credentials used by the seed script (Step 13). Falls back
+  // to demo-admin@tripverse.com / demo123 when unset.
+  ADMIN_EMAIL: z.string().email().optional(),
+  ADMIN_PASSWORD: z.string().min(1).optional(),
+
   JWT_ACCESS_SECRET: z.string().min(1, "JWT_ACCESS_SECRET is required"),
   JWT_REFRESH_SECRET: z.string().min(1, "JWT_REFRESH_SECRET is required"),
   JWT_ACCESS_EXPIRES_IN: z.string().default("1d"),
@@ -61,6 +66,9 @@ const config = {
   database_url: env.DATABASE_URL,
 
   bcrypt_salt_rounds: env.BCRYPT_SALT_ROUNDS,
+
+  admin_email: env.ADMIN_EMAIL,
+  admin_password: env.ADMIN_PASSWORD,
 
   jwt_access_secret: env.JWT_ACCESS_SECRET,
   jwt_refresh_secret: env.JWT_REFRESH_SECRET,
