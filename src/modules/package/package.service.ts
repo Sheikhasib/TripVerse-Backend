@@ -19,6 +19,12 @@ const serializePrice = <T extends { price: Prisma.Decimal }>(row: T): T => ({
   price: Number(row.price),
 });
 
+// Public payloads carry the agent's display info only — never email.
+const publicPackageInclude = {
+  category: { select: { id: true, name: true, slug: true } },
+  agent: { select: { id: true, name: true, avatarUrl: true } },
+} as const;
+
 const validateCategory = async (categoryId: string) => {
   const category = await prisma.category.findUnique({
     where: { id: categoryId },
@@ -168,7 +174,7 @@ const getPublicPackages = async (query: IPackageQuery) => {
     prisma.tourPackage.findMany({
       where,
       orderBy,
-      include: { category: { select: { id: true, name: true, slug: true } } },
+      include: publicPackageInclude,
       skip,
       take: limit,
     }),
@@ -185,7 +191,7 @@ const getPublicPackages = async (query: IPackageQuery) => {
 const getPackageBySlug = async (slug: string) => {
   const tourPackage = await prisma.tourPackage.findFirst({
     where: { slug, status: PackageStatus.APPROVED, isDeleted: false },
-    include: { category: { select: { id: true, name: true, slug: true } } },
+    include: publicPackageInclude,
   });
 
   if (!tourPackage) {
