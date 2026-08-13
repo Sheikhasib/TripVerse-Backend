@@ -1,7 +1,7 @@
 import { BookingStatus, PaymentStatus } from "../../../generated/prisma/enums";
 import config from "../../config";
 import { prisma } from "../../lib/prisma";
-import { SslcommerzValidationResult, generateTranId, sslcommerzInit, sslcommerzValidate } from "../../lib/sslcommerz";
+import { SslcommerzInitResult, SslcommerzValidationResult, generateTranId, sslcommerzInit, sslcommerzValidate } from "../../lib/sslcommerz";
 import { AppError } from "../../utils/appError";
 import { sendBookingEmail } from "../../utils/email";
 import { IGatewayResult, IPaymentCreateRequest, IPaymentGatewayOutcome } from "./payment.interface";
@@ -56,39 +56,60 @@ const createPaymentSession = async (
   const amount = Number(booking.totalPrice);
   const tranId = generateTranId();
 
-  // A fresh session supersedes any abandoned ones for this booking.
+  // One live session per booking: the ledger row is created atomically while
+  // superseding any abandoned session, then the gateway is asked. The row
+  // survives regardless of the gateway response — init failure flips it to
+  // FAILED below so a truthful entry always exists.
+  const payment = await prisma.$transaction(async (tx) => {
+    await tx.payment.updateMany({
+      where: { bookingId, status: PaymentStatus.INITIATED },
+      data: { status: PaymentStatus.CANCELLED },
+    });
+
+    return tx.payment.create({
+      data: {
+        bookingId,
+        tranId,
+        amount,
+        status: PaymentStatus.INITIATED,
+      },
+    });
+  });
+
+  let init: SslcommerzInitResult;
+  try {
+    init = await sslcommerzInit({
+      total_amount: amount,
+      tran_id: tranId,
+      success_url: buildCallbackUrl(bookingId, tranId, "success"),
+      fail_url: buildCallbackUrl(bookingId, tranId, "fail"),
+      cancel_url: buildCallbackUrl(bookingId, tranId, "cancel"),
+      ipn_url: buildCallbackUrl(bookingId, tranId, "ipn"),
+      cus_name: user.name,
+      cus_email: user.email,
+      cus_phone: user.phone ?? "01711111111",
+    });
+  } catch (error) {
+    // keep the ledger truthful — the session never reached the gateway. The
+    // status guard makes a concurrent /create that already cancelled this row
+    // win the race (that row stays cancelled, this one fails only if live).
+    await prisma.payment.updateMany({
+      where: { id: payment.id, status: PaymentStatus.INITIATED },
+      data: { status: PaymentStatus.FAILED },
+    });
+    throw error;
+  }
+
+  // store the gateway URLs only if the row is still the live session.
   await prisma.payment.updateMany({
-    where: { bookingId, status: PaymentStatus.INITIATED },
-    data: { status: PaymentStatus.CANCELLED },
-  });
-
-  const init = await sslcommerzInit({
-    total_amount: amount,
-    tran_id: tranId,
-    success_url: buildCallbackUrl(bookingId, tranId, "success"),
-    fail_url: buildCallbackUrl(bookingId, tranId, "fail"),
-    cancel_url: buildCallbackUrl(bookingId, tranId, "cancel"),
-    ipn_url: buildCallbackUrl(bookingId, tranId, "ipn"),
-    cus_name: user.name,
-    cus_email: user.email,
-    cus_phone: user.phone ?? "01711111111",
-  });
-
-  const payment = await prisma.payment.create({
-    data: {
-      bookingId,
-      tranId,
-      amount,
-      status: PaymentStatus.INITIATED,
-      gatewayPageUrl: init.GatewayPageURL,
-      sslSessionKey: init.sessionkey,
-    },
+    where: { id: payment.id, status: PaymentStatus.INITIATED },
+    data: { gatewayPageUrl: init.GatewayPageURL, sslSessionKey: init.sessionkey },
   });
 
   return {
     paymentId: payment.id,
     tranId: payment.tranId,
-    paymentUrl: payment.gatewayPageUrl,
+    paymentUrl: init.GatewayPageURL ?? null,
   };
 };
 

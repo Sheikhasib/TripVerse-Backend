@@ -118,10 +118,24 @@ type BookingWitPackage = Prisma.BookingGetPayload<{
   include: { package: typeof bookingPackageSelect };
 }>;
 
-const mapBookingList = (booking: BookingWitPackage) => ({
+// Payments show on list rows too (DoD: "list/detail now includes payments"),
+// mapped to Number at the boundary like the rest of the money fields.
+type BookingPaymentItem = {
+  id: string;
+  tranId: string;
+  amount: unknown;
+  currency: string;
+  status: string;
+  cardType: string | null;
+  bankTranId: string | null;
+  paidAt: Date | null;
+};
+
+const mapBookingList = (booking: BookingWitPackage & { payments?: BookingPaymentItem[] }) => ({
   ...booking,
   totalPrice: Number(booking.totalPrice),
   package: { ...booking.package, price: Number(booking.package.price) },
+  payments: booking.payments?.map((p) => ({ ...p, amount: Number(p.amount) })),
 });
 
 // ── Create booking ─────────────────────────────────────────────────────────
@@ -240,7 +254,11 @@ const getMyBookings = async (userId: string, query: IBookingQuery) => {
   const where: Prisma.BookingWhereInput = { userId };
   if (query.status) where.status = query.status;
 
-  const result = await paginateBooking(where, { package: bookingPackageSelect }, query);
+  const result = await paginateBooking(
+    where,
+    { package: bookingPackageSelect, payments: bookingPaymentSelect },
+    query,
+  );
   return { ...result, data: result.data.map(mapBookingList) };
 };
 
@@ -260,7 +278,11 @@ const getAgentBookings = async (
     };
   }
 
-  const result = await paginateBooking(where, { package: bookingPackageSelect }, query);
+  const result = await paginateBooking(
+    where,
+    { package: bookingPackageSelect, payments: bookingPaymentSelect },
+    query,
+  );
   return { ...result, data: result.data.map(mapBookingList) };
 };
 
@@ -274,7 +296,11 @@ const getAllBookings = async (query: IBookingSearchQuery) => {
 
   const result = await paginateBooking(
     where,
-    { package: bookingPackageSelect, user: bookingUserSelect },
+    {
+      package: bookingPackageSelect,
+      user: bookingUserSelect,
+      payments: bookingPaymentSelect,
+    },
     query,
   );
   return { ...result, data: result.data.map(mapBookingList) };
@@ -298,10 +324,7 @@ const getBookingDetail = async (id: string, actor: BookingActor) => {
     throw new AppError(403, "You are not authorized to view this booking.");
   }
 
-  return {
-    ...mapBookingList(booking),
-    payments: booking.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
-  };
+  return mapBookingList(booking);
 };
 
 // ── Status transition ───────────────────────────────────────────────────────

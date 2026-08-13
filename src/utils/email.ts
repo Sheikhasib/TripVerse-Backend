@@ -200,7 +200,7 @@ export const sendBookingEmail = async (
       </tr>
       <tr>
         <td style="padding: 8px 0; color: #6b7280;">Total</td>
-        <td style="padding: 8px 0;"><strong>$${escapeHtml(details.totalPrice.toFixed(2))}</strong></td>
+        <td style="padding: 8px 0;"><strong>&#2547;${escapeHtml(details.totalPrice.toFixed(2))}</strong></td>
       </tr>
     </table>
   `;

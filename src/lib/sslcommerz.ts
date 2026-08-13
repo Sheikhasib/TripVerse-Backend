@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import config from "../config/index";
+import { AppError } from "../utils/appError";
 
 export interface SslcommerzInitResult {
   status: string;
@@ -23,7 +24,7 @@ export interface SslcommerzValidationResult {
 
 // SSLCommerz truncates tran_id to 30 chars — date + time + random salt stays safely under.
 export function generateTranId(): string {
-  return `TRNX_ID_${Date.now()}_${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+  return `TRNX_ID-${Date.now()}-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
 }
 
 // Initiates a gateway session. Server-to-server POST, form-encoded. The gateway
@@ -69,17 +70,17 @@ export async function sslcommerzInit(options: {
   });
 
   const text = await res.text();
-  if (!res.ok) throw new Error(`SSLCommerz init failed (${res.status}): ${text}`);
+  if (!res.ok) throw new AppError(502, `SSLCommerz init failed (${res.status})`);
 
   let data: SslcommerzInitResult;
   try {
     data = JSON.parse(text) as SslcommerzInitResult;
   } catch {
-    throw new Error(`SSLCommerz init returned non-JSON: ${text}`);
+    throw new AppError(502, "SSLCommerz init returned a non-JSON response");
   }
 
   if (data.status !== "success" || !data.GatewayPageURL) {
-    throw new Error(`SSLCommerz init rejected: ${data.failedreason ?? data.status}`);
+    throw new AppError(502, `SSLCommerz init rejected: ${data.failedreason ?? data.status}`);
   }
   return data;
 }
@@ -102,13 +103,13 @@ export async function sslcommerzValidate(options: {
   });
 
   const text = await res.text();
-  if (!res.ok) throw new Error(`SSLCommerz validation failed (${res.status}): ${text}`);
+  if (!res.ok) throw new AppError(502, `SSLCommerz validation failed (${res.status})`);
 
   let data: SslcommerzValidationResult;
   try {
     data = JSON.parse(text) as SslcommerzValidationResult;
   } catch {
-    throw new Error(`SSLCommerz validation returned non-JSON: ${text}`);
+    throw new AppError(502, "SSLCommerz validation returned a non-JSON response");
   }
   return data;
 }
