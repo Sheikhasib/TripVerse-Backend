@@ -22,9 +22,18 @@ enum PackageStatus {
 
 enum BookingStatus {
   PENDING
+  PAID
   CONFIRMED
   CANCELLED
   COMPLETED
+}
+
+enum PaymentStatus {
+  INITIATED
+  SUCCESS
+  FAILED
+  CANCELLED
+  REFUNDED
 }
 
 enum PostStatus {

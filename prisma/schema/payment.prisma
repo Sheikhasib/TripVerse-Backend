@@ -1,0 +1,23 @@
+model Payment {
+  id             String        @id @default(uuid())
+  bookingId      String
+  tranId         String        @unique // SSLCommerz transaction id, generated server-side
+  valId          String?               // set after gateway success, used for server-side validation
+  amount         Decimal       @db.Decimal(10, 2) // = booking.totalPrice at session creation
+  currency       String        @default("BDT")
+  status         PaymentStatus @default(INITIATED)
+  gatewayPageUrl String?
+  sslSessionKey  String?
+  cardType       String?
+  bankTranId     String?
+  paidAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  @@index([bookingId])
+  @@index([status])
+  @@map("payments")
+}
