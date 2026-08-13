@@ -31,7 +31,11 @@ app.use(helmet());
 
 app.use(
   cors({
-    origin: [config.frontend_url_dev, config.frontend_url_prod],
+    // Dev host (localhost) + prod host (Vercel) both allowed side-by-side.
+    // Config resolves sensible defaults so neither can be falsy.
+    origin: [config.frontend_url_dev, config.frontend_url_prod].filter(
+      (o): o is string => Boolean(o),
+    ),
     credentials: true,
   }),
 );

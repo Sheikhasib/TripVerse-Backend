@@ -36,11 +36,13 @@ const confirmPayment = catchAsync(
       req.body as IGatewayResult,
     );
 
-    const frontendBase =
-      config.node_env === "production" ? config.frontend_url_prod : config.frontend_url_dev;
+    const redirectBase =
+      config.node_env === "production"
+        ? config.frontend_url_prod
+        : config.frontend_url_dev;
     const page = ["success", "fail", "cancel"].includes(status) ? status : "fail";
 
-    res.redirect(302, `${frontendBase}/payment/${page}?bookingId=${bookingId}`);
+    res.redirect(302, `${redirectBase}/payment/${page}?bookingId=${bookingId}`);
   },
 );
 

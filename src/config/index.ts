@@ -14,8 +14,12 @@ const envSchema = z.object({
   PORT: z.string().default("4000"),
   NODE_ENV: z.enum(["development", "production"]).default("development"),
 
-  FRONTEND_URL_DEV: z.string().url(),
-  FRONTEND_URL_PROD: z.string().url(),
+  // Frontend origins for CORS + payment redirects. The frontend may not be
+  // deployed yet (or may be rebuilt), so both are optional: the backend must
+  // never refuse to boot just because a UI host isn't live. Routes that need a
+  // real origin (payment callback redirects) fall back to the backend URL.
+  FRONTEND_URL_DEV: z.string().url().optional(),
+  FRONTEND_URL_PROD: z.string().url().optional(),
 
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
 
@@ -79,8 +83,12 @@ const config = {
   port: env.PORT,
   node_env: env.NODE_ENV,
 
-  frontend_url_dev: env.FRONTEND_URL_DEV,
-  frontend_url_prod: env.FRONTEND_URL_PROD,
+  // Frontend origins for CORS + payment redirects. Localhost always wins for
+  // local testing; production uses the Vercel frontend URL, falling back to the
+  // backend URL so the API stays reachable even before the UI is deployed.
+  frontend_url_dev: env.FRONTEND_URL_DEV || "http://localhost:3000",
+  frontend_url_prod:
+    env.FRONTEND_URL_PROD || env.BACKEND_PUBLIC_URL || "",
 
   database_url: env.DATABASE_URL,
 
