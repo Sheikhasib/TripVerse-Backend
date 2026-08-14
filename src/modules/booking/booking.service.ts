@@ -2,7 +2,8 @@ import { Prisma } from "../../../generated/prisma/client";
 import { BookingStatus, PackageStatus, PaymentStatus, Role } from "../../../generated/prisma/enums";
 import { prisma } from "../../lib/prisma";
 import { AppError } from "../../utils/appError";
-import { sendBookingEmail } from "../../utils/email";
+import { sslcommerzRefund } from "../../lib/sslcommerz";
+import { sendBookingEmail, sendRefundEmail } from "../../utils/email";
 import {
   IBookingQuery,
   IBookingSearchQuery,
@@ -112,6 +113,8 @@ const bookingPaymentSelect = {
     bankTranId: true,
     valId: true,
     paidAt: true,
+    refundRefId: true,
+    refundedAt: true,
   },
 } as const;
 
@@ -336,6 +339,78 @@ const getBookingDetail = async (id: string, actor: BookingActor) => {
   return mapBookingList(booking);
 };
 
+// ── Refund (booking cancelled with settled money) ───────────────────────────
+// Runs AFTER the status-transition transaction commits, so a gateway failure can
+// never roll back the cancellation itself. Each settled payment is refunded via
+// the SSLCommerz Refund API and its ledger row stores the gateway reference.
+type RefundContext = {
+  email: string;
+  name: string;
+  packageTitle: string;
+  travelDate: Date;
+};
+
+const issueRefunds = async (
+  bookingId: string,
+  ctx: RefundContext,
+): Promise<void> => {
+  try {
+    const payments = await prisma.payment.findMany({
+      where: { bookingId, status: PaymentStatus.REFUNDED },
+    });
+    if (payments.length === 0) return;
+
+    const refundRefs: string[] = [];
+    const outcomes = await Promise.allSettled(
+      payments.map(async (payment) => {
+        if (!payment.bankTranId) {
+          console.error(
+            `[refund] payment ${payment.id} has no bank_tran_id; gateway refund skipped.`,
+          );
+          return;
+        }
+        const gateway = await sslcommerzRefund({
+          bank_tran_id: payment.bankTranId,
+          refund_amount: Number(payment.amount),
+          refund_remarks: `Booking ${bookingId} cancelled - TripVerse`,
+          refe_id: bookingId,
+        });
+        if (gateway.status === "success" && gateway.refund_ref_id) {
+          await prisma.payment.update({
+            where: { id: payment.id },
+            data: { refundRefId: gateway.refund_ref_id, refundedAt: new Date() },
+          });
+          refundRefs.push(gateway.refund_ref_id);
+        } else {
+          console.error(
+            `[refund] payment ${payment.id} rejected: ${gateway.errorReason ?? gateway.status ?? "unknown"}`,
+          );
+        }
+      }),
+    );
+    // individual failures are logged above and swallowed — money status already
+    // flipped to REFUNDED, so the customer sees a refund regardless.
+    void outcomes;
+
+    if (refundRefs.length > 0) {
+      void Promise.allSettled([
+        sendRefundEmail({
+          email: ctx.email,
+          name: ctx.name,
+          packageTitle: ctx.packageTitle,
+          travelDate: ctx.travelDate,
+          amount: payments.reduce((sum, p) => sum + Number(p.amount), 0),
+          refundRefId: refundRefs[0],
+        }),
+      ]);
+    }
+  } catch (error) {
+    console.error(
+      `[refund] unexpected error: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+};
+
 // ── Status transition ───────────────────────────────────────────────────────
 const updateBookingStatus = async (
   id: string,
@@ -402,8 +477,9 @@ const updateBookingStatus = async (
       );
     }
 
-    // Cancelling a paid booking marks its money as returned (REFUNDED flag —
-    // the actual transfer is out of scope). Abandoned sessions are cancelled.
+    // Cancelling a paid booking marks its money as returned (REFUNDED flag).
+    // Abandoned sessions are cancelled. The gateway refunds + refund email run
+    // after this transaction commits (issueRefunds is best-effort).
     if (to === BookingStatus.CANCELLED) {
       await tx.payment.updateMany({
         where: { bookingId: id, status: PaymentStatus.SUCCESS },
@@ -420,6 +496,16 @@ const updateBookingStatus = async (
 
   if (!updated) {
     throw new AppError(404, "Booking not found.");
+  }
+
+  // best-effort gateway refund + refund email for settled money (never throws)
+  if (to === BookingStatus.CANCELLED) {
+    await issueRefunds(id, {
+      email: booking.user.email,
+      name: booking.user.name,
+      packageTitle: booking.package.title,
+      travelDate: booking.travelDate,
+    });
   }
 
   // best-effort email for money-status changes

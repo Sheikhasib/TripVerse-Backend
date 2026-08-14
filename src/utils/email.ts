@@ -212,3 +212,69 @@ export const sendBookingEmail = async (
     html: emailLayout(content),
   });
 };
+
+// Informs the customer that a paid booking was cancelled and the payment has
+// been refunded. Best-effort like the other emails.
+export interface IRefundEmailDetails {
+  email: string;
+  name: string;
+  packageTitle: string;
+  travelDate: Date;
+  amount: number;
+  refundRefId?: string | null;
+}
+
+export const sendRefundEmail = async (
+  details: IRefundEmailDetails,
+): Promise<void> => {
+  const client = getResend();
+  if (!client || !details.email) {
+    console.warn("[email] Resend not configured; skipping refund email.");
+    return;
+  }
+
+  const from = config.email_from || "TripVerse <onboarding@resend.dev>";
+  const travelDate = details.travelDate.toISOString().slice(0, 10);
+
+  const content = `
+    <h2 style="margin-top: 0; font-size: 18px;">Refund issued</h2>
+    <p style="font-size: 14px; line-height: 1.6; color: #374151;">
+      Hi ${escapeHtml(details.name)},<br/>
+      Your booking was cancelled, and <strong>&#2547;${escapeHtml(
+        details.amount.toFixed(2),
+      )}</strong> has been refunded to your original payment method. Please allow
+      5-10 business days for the money to appear.
+    </p>
+    <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280; width: 120px;">Package</td>
+        <td style="padding: 8px 0;"><strong>${escapeHtml(details.packageTitle)}</strong></td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Travel date</td>
+        <td style="padding: 8px 0;">${escapeHtml(travelDate)}</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Refunded amount</td>
+        <td style="padding: 8px 0;"><strong>&#2547;${escapeHtml(details.amount.toFixed(2))}</strong></td>
+      </tr>
+      ${details.refundRefId
+        ? `
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Refund reference</td>
+        <td style="padding: 8px 0;">${escapeHtml(details.refundRefId)}</td>
+      </tr>`
+        : ""}
+    </table>
+    <p style="font-size: 13px; line-height: 1.6; color: #6b7280; margin-top: 16px;">
+      If you have any questions about this refund, please contact support.
+    </p>
+  `;
+
+  await client.emails.send({
+    from,
+    to: [details.email],
+    subject: "Booking cancelled & refund issued - TripVerse",
+    html: emailLayout(content),
+  });
+};

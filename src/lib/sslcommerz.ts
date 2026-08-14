@@ -44,6 +44,16 @@ export interface SslcommerzValidationResult {
   [key: string]: string | undefined;
 }
 
+export interface SslcommerzRefundResult {
+  APIConnect?: string;
+  status?: string; // success | failed | processing
+  errorReason?: string;
+  refund_ref_id?: string;
+  bank_tran_id?: string;
+  trans_id?: string;
+  [key: string]: string | undefined;
+}
+
 // SSLCommerz truncates tran_id to 30 chars — date + time + random salt stays safely under.
 export function generateTranId(): string {
   return `TRNX_ID-${Date.now()}-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
@@ -134,6 +144,43 @@ export async function sslcommerzValidate(options: {
     data = JSON.parse(text) as SslcommerzValidationResult;
   } catch {
     throw new AppError(502, "SSLCommerz validation returned a non-JSON response");
+  }
+  return data;
+}
+
+// Initiates a refund against a settled transaction. bank_tran_id is the
+// original transaction's bank transaction ID captured at payment time.
+// status: success (initiated) | failed | processing (already initiated).
+export async function sslcommerzRefund(options: {
+  bank_tran_id: string;
+  refund_amount: number;
+  refund_remarks: string;
+  refe_id?: string;
+}): Promise<SslcommerzRefundResult> {
+  const { storeId, storePassword } = requireConfig();
+  const params = new URLSearchParams({
+    bank_tran_id: options.bank_tran_id,
+    store_id: storeId,
+    store_passwd: storePassword,
+    refund_amount: options.refund_amount.toFixed(2),
+    refund_remarks: options.refund_remarks,
+    format: "json",
+    v: "1",
+  });
+  if (options.refe_id) params.set("refe_id", options.refe_id);
+
+  const res = await fetch(`${config.sslcommerz_refund_url}?${params.toString()}`, {
+    method: "GET",
+  });
+
+  const text = await res.text();
+  if (!res.ok) throw new AppError(502, `SSLCommerz refund failed (${res.status})`);
+
+  let data: SslcommerzRefundResult;
+  try {
+    data = JSON.parse(text) as SslcommerzRefundResult;
+  } catch {
+    throw new AppError(502, "SSLCommerz refund returned a non-JSON response");
   }
   return data;
 }

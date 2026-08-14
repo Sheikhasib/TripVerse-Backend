@@ -42,6 +42,7 @@ const envSchema = z.object({
   // derived from SSL_COMMERZ_SANDBOX when absent.
   SSLCOMMERZ_INIT_URL: z.string().url().optional(),
   SSLCOMMERZ_VALIDATE_URL: z.string().url().optional(),
+  SSLCOMMERZ_REFUND_URL: z.string().url().optional(),
 
   // Publicly reachable base URL the payment module uses to build the
   // SSLCommerz success/fail/cancel/IPN callback URLs. Must NOT be localhost in
@@ -111,6 +112,11 @@ const config = {
     (env.SSL_COMMERZ_SANDBOX === "true"
       ? "https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php"
       : "https://securepay.sslcommerz.com/validator/api/validationserverAPI.php"),
+  sslcommerz_refund_url:
+    env.SSLCOMMERZ_REFUND_URL ??
+    (env.SSL_COMMERZ_SANDBOX === "true"
+      ? "https://sandbox.sslcommerz.com/validator/api/merchantTransIDvalidationAPI.php"
+      : "https://securepay.sslcommerz.com/validator/api/merchantTransIDvalidationAPI.php"),
   backend_public_url: env.BACKEND_PUBLIC_URL,
 
   jwt_access_secret: env.JWT_ACCESS_SECRET,

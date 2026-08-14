@@ -11,6 +11,8 @@ model Payment {
   cardType       String?
   bankTranId     String?
   paidAt         DateTime?
+  refundRefId    String? // SSLCommerz refund reference (set when a refund is initiated)
+  refundedAt     DateTime? // when the refund was initiated/settled
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
