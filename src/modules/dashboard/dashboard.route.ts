@@ -24,6 +24,11 @@ router.get(
 );
 
 // 3. User dashboard — own bookings/upcoming/spend
-router.get("/user", auth(Role.USER), dashboardController.getUserDashboard);
+router.get(
+  "/user",
+  auth(Role.USER),
+  validateRequest({ query: dashboardValidations.dashboardQuerySchema }),
+  dashboardController.getUserDashboard,
+);
 
 export const dashboardRoutes = router;

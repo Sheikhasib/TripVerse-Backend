@@ -58,4 +58,6 @@ export interface IUserDashboard {
   totalSpend: number;
   upcomingCount: number;
   upcoming: IUpcomingBooking[];
+  bookingsByStatus: IBookingsByStatus[];
+  revenueOverTime: IRevenuePoint[];
 }

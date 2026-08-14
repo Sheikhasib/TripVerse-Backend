@@ -12,17 +12,19 @@ import {
 // Money is `Decimal(10,2)` in the schema (AGENTS.md) — map to Number on return.
 const toNumber = (value: unknown): number => Number(value ?? 0);
 
-// Booking-status breakdown via groupBy + _count. Optional package-id scope
-// (`agentId`) limits it to an agent's own, non-deleted packages.
+// Booking-status breakdown via groupBy + _count. Optional scope limits it to
+// an agent's own non-deleted packages or a single user's bookings.
 const getBookingsByStatus = async (
-  agentId?: string,
+  scope: { agentId?: string; userId?: string } = {},
 ): Promise<IBookingsByStatus[]> => {
   const grouped = await prisma.booking.groupBy({
     by: ["status"],
     _count: { _all: true },
-    where: agentId
-      ? { package: { agentId, isDeleted: false } }
-      : undefined,
+    where: scope.agentId
+      ? { package: { agentId: scope.agentId, isDeleted: false } }
+      : scope.userId
+        ? { userId: scope.userId }
+        : undefined,
   });
 
   return grouped
@@ -35,12 +37,13 @@ const getBookingsByStatus = async (
 // COMPLETED (a terminal state, so it is the last write). `createdAt` is when
 // the booking was made (PENDING) and never moves, which would mis-date revenue
 // weeks later. Postgres generate_series guarantees a dense series (zero-filled
-// days) — better and faster than a per-day JS loop.
+// days) — better and faster than a per-day JS loop. Optional scope: an agent's
+// own non-deleted packages, or a single user's spend.
 const getRevenueOverTime = async (
   days: number,
-  agentId?: string,
+  scope: { agentId?: string; userId?: string } = {},
 ): Promise<IRevenuePoint[]> => {
-  const scope = agentId
+  const agentScope = scope.agentId
     ? `AND b."packageId" IN (
          SELECT p."id"
          FROM "tour_packages" p
@@ -48,6 +51,8 @@ const getRevenueOverTime = async (
            AND p."isDeleted" = false
        )`
     : "";
+  const userScope = scope.userId ? `AND b."userId" = $2` : "";
+  const whereClause = scope.agentId ? agentScope : userScope;
 
   const rows = await prisma.$queryRawUnsafe<
     { date: string; revenue: number }[]
@@ -63,12 +68,12 @@ const getRevenueOverTime = async (
     LEFT JOIN "bookings" b
       ON date_trunc('day', b."updatedAt")::date = days.d
       AND b."status" = 'COMPLETED'
-      ${scope}
+      ${whereClause}
     GROUP BY days.d
     ORDER BY days.d ASC
     `,
     days,
-    ...(agentId ? [agentId] : []),
+    ...(scope.agentId || scope.userId ? [scope.agentId ?? scope.userId] : []),
   );
 
   return rows;
@@ -159,7 +164,7 @@ const getAgentDashboard = async (
       where: { agentId: userId, isDeleted: false },
       select: { id: true },
     }),
-    getBookingsByStatus(userId),
+    getBookingsByStatus({ agentId: userId }),
     prisma.tourPackage.aggregate({
       _avg: { rating: true },
       where: {
@@ -182,7 +187,7 @@ const getAgentDashboard = async (
       totalRevenue: 0,
       averageRating: Math.round((averageRating._avg.rating ?? 0) * 10) / 10,
       bookingsByStatus,
-      revenueOverTime: await getRevenueOverTime(days, userId),
+      revenueOverTime: await getRevenueOverTime(days, { agentId: userId }),
     };
   }
 
@@ -198,7 +203,7 @@ const getAgentDashboard = async (
           AND: [scope, { status: BookingStatus.COMPLETED }],
         },
       }),
-      getRevenueOverTime(days, userId),
+      getRevenueOverTime(days, { agentId: userId }),
     ]);
 
   return {
@@ -212,33 +217,39 @@ const getAgentDashboard = async (
 };
 
 // 3. User dashboard — the user's bookings, spend, and upcoming trips.
-const getUserDashboard = async (userId: string): Promise<IUserDashboard> => {
-  const [totalBookings, totalSpend, upcoming] = await Promise.all([
-    prisma.booking.count({ where: { userId } }),
-    prisma.booking.aggregate({
-      _sum: { totalPrice: true },
-      where: { userId, status: BookingStatus.COMPLETED },
-    }),
-    prisma.booking.findMany({
-      where: {
-        userId,
-        status: {
-          in: [BookingStatus.PENDING, BookingStatus.PAID, BookingStatus.CONFIRMED],
+const getUserDashboard = async (
+  userId: string,
+  days = 30,
+): Promise<IUserDashboard> => {
+  const [totalBookings, totalSpend, upcoming, bookingsByStatus, revenueOverTime] =
+    await Promise.all([
+      prisma.booking.count({ where: { userId } }),
+      prisma.booking.aggregate({
+        _sum: { totalPrice: true },
+        where: { userId, status: BookingStatus.COMPLETED },
+      }),
+      prisma.booking.findMany({
+        where: {
+          userId,
+          status: {
+            in: [BookingStatus.PENDING, BookingStatus.PAID, BookingStatus.CONFIRMED],
+          },
+          travelDate: { gt: new Date() },
         },
-        travelDate: { gt: new Date() },
-      },
-      select: {
-        id: true,
-        travelDate: true,
-        travelers: true,
-        totalPrice: true,
-        status: true,
-        package: { select: { id: true, title: true, slug: true } },
-      },
-      orderBy: { travelDate: "asc" },
-      take: 5,
-    }),
-  ]);
+        select: {
+          id: true,
+          travelDate: true,
+          travelers: true,
+          totalPrice: true,
+          status: true,
+          package: { select: { id: true, title: true, slug: true } },
+        },
+        orderBy: { travelDate: "asc" },
+        take: 5,
+      }),
+      getBookingsByStatus({ userId }),
+      getRevenueOverTime(days, { userId }),
+    ]);
 
   return {
     totalBookings,
@@ -248,6 +259,8 @@ const getUserDashboard = async (userId: string): Promise<IUserDashboard> => {
       ...b,
       totalPrice: Number(b.totalPrice),
     })),
+    bookingsByStatus,
+    revenueOverTime,
   };
 };
 

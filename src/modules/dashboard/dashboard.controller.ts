@@ -42,7 +42,10 @@ const getAgentDashboard = catchAsync(
 const getUserDashboard = catchAsync(
   async (req: Request, res: Response, next: NextFunction) => {
     const userId = String(req.user?.id);
-    const result = await dashboardService.getUserDashboard(userId);
+    const result = await dashboardService.getUserDashboard(
+      userId,
+      Number(req.query.days),
+    );
 
     sendResponse(res, {
       success: true,
