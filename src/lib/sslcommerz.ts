@@ -112,7 +112,9 @@ export async function sslcommerzInit(options: {
     throw new AppError(502, "SSLCommerz init returned a non-JSON response");
   }
 
-  if (data.status !== "success" || !data.GatewayPageURL) {
+  // The gateway reports status in UPPERCASE ("SUCCESS" / "FAILED"); any other
+  // status, or a success without the hosted checkout URL, is a failed init.
+  if (data.status !== "SUCCESS" || !data.GatewayPageURL) {
     const reason = data.failedreason || data.status || "unknown";
     console.error(
       `[sslcommerz] init rejected (url=${config.sslcommerz_init_url}, sandbox=${config.ssl_commerz_sandbox}): ${reason}`,
