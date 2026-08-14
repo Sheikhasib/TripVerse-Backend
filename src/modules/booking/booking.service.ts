@@ -110,6 +110,7 @@ const bookingPaymentSelect = {
     status: true,
     cardType: true,
     bankTranId: true,
+    valId: true,
     paidAt: true,
   },
 } as const;
@@ -128,6 +129,7 @@ type BookingPaymentItem = {
   status: string;
   cardType: string | null;
   bankTranId: string | null;
+  valId: string | null;
   paidAt: Date | null;
 };
 
