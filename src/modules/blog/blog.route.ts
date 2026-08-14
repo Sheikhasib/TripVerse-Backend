@@ -19,6 +19,14 @@ router.get(
   blogController.getAllPosts,
 );
 
+// 1b. Own posts ("My Posts" UI for agents/admins) — before /:slug
+router.get(
+  "/my-posts",
+  auth(Role.AGENT, Role.ADMIN),
+  validateRequest({ query: blogValidations.internalQuerySchema }),
+  blogController.getMyPosts,
+);
+
 // 2. Public listing — PUBLISHED + not-deleted only
 router.get(
   "/",

@@ -156,6 +156,36 @@ const getAllPosts = async (query: IInternalPostQuery) => {
   };
 };
 
+// 4b. The caller's own posts (AGENT/ADMIN "My Posts" UI) — any status, since
+//     agents must see their own drafts before an admin publishes them.
+const getMyPosts = async (user: IRequestUser, query: IInternalPostQuery) => {
+  const page = query.page ?? 1;
+  const limit = query.limit ?? 10;
+  const skip = (page - 1) * limit;
+
+  const where: Prisma.BlogPostWhereInput = {
+    authorId: user.id,
+    isDeleted: false,
+    ...(query.status ? { status: query.status } : {}),
+  };
+
+  const [data, total] = await Promise.all([
+    prisma.blogPost.findMany({
+      where,
+      include: { author: { select: { id: true, name: true, email: true } } },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.blogPost.count({ where }),
+  ]);
+
+  return {
+    data,
+    meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  };
+};
+
 // Fetch + ownership gate shared by PATCH and DELETE. ADMIN bypasses ownership;
 // AGENT edits are confined to their own posts.
 const findOwnedPost = async (user: IRequestUser, postId: string) => {
@@ -236,6 +266,7 @@ export const blogService = {
   getPublicPosts,
   getPostBySlug,
   getAllPosts,
+  getMyPosts,
   updatePost,
   changePostStatus,
   softDeletePost,

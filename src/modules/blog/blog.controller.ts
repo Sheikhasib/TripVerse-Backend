@@ -63,6 +63,21 @@ const getAllPosts = catchAsync(
   },
 );
 
+// 4b. Own posts controller (AGENT/ADMIN)
+const getMyPosts = catchAsync(
+  async (req: Request, res: Response, next: NextFunction) => {
+    const result = await blogService.getMyPosts(req.user!, req.query);
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message: "Posts retrieved successfully.",
+      data: result.data,
+      meta: result.meta,
+    });
+  },
+);
+
 // 5. Update post controller (AGENT own / ADMIN any)
 const updatePost = catchAsync(
   async (req: Request, res: Response, next: NextFunction) => {
@@ -113,6 +128,7 @@ export const blogController = {
   getPublicPosts,
   getPostBySlug,
   getAllPosts,
+  getMyPosts,
   updatePost,
   changePostStatus,
   softDeletePost,
