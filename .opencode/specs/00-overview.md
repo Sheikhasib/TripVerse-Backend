@@ -21,6 +21,21 @@ Files are numbered in the order you build them — each step depends on the one 
 15. `15-backlog-summary.md` — everything explicitly cut from MVP, for later
 16. `16-payment-module.md` — SSLCommerz payment gateway (checkout, IPN, booking PAID status)
 
+## Backlog — scoped specs (do NOT build now)
+
+The Step 15 backlog items have been spec'd out into concrete follow-up steps. Each is a quick add-on
+later, not a redesign. Build them in order only after the MVP + payment are verified:
+
+17. `17-wishlist-module.md` — user saves packages to a wishlist
+18. `18-notification-module.md` — in-app notifications for bookings + package approvals
+19. `19-blog-comments.md` — public blog comments with one-level replies
+20. `20-review-edit-delete.md` — review edit/delete + shared rating recompute
+21. `21-email-verification-password-reset.md` — one-time-token verify + reset flows
+22. `22-refresh-token-rotation.md` — rotating refresh tokens with theft detection
+23. `23-sslcommerz-refund.md` — real refund money movement on PAID-booking cancel
+24. `24-testing.md` — Vitest + supertest suite (unit + integration)
+25. `25-ci-cd.md` — GitHub Actions: typecheck, tests, Vercel bundle-freshness gate
+
 Finish and test one file before opening the next.
 
 ## Git workflow (mandatory)
