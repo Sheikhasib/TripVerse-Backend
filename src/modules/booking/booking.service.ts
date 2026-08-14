@@ -115,6 +115,13 @@ const bookingPaymentSelect = {
   },
 } as const;
 
+// Payments ordered newest-first so consumers can rely on payments[0] being the
+// latest attempt (used for the user payment-history "latest status" row).
+const bookingPaymentsInclude = {
+  ...bookingPaymentSelect,
+  orderBy: { createdAt: "desc" as const },
+} as const;
+
 type BookingWitPackage = Prisma.BookingGetPayload<{
   include: { package: typeof bookingPackageSelect };
 }>;
@@ -258,7 +265,7 @@ const getMyBookings = async (userId: string, query: IBookingQuery) => {
 
   const result = await paginateBooking(
     where,
-    { package: bookingPackageSelect, payments: bookingPaymentSelect },
+    { package: bookingPackageSelect, payments: bookingPaymentsInclude },
     query,
   );
   return { ...result, data: result.data.map(mapBookingList) };
@@ -282,7 +289,7 @@ const getAgentBookings = async (
 
   const result = await paginateBooking(
     where,
-    { package: bookingPackageSelect, payments: bookingPaymentSelect },
+    { package: bookingPackageSelect, payments: bookingPaymentsInclude },
     query,
   );
   return { ...result, data: result.data.map(mapBookingList) };
@@ -301,7 +308,7 @@ const getAllBookings = async (query: IBookingSearchQuery) => {
     {
       package: bookingPackageSelect,
       user: bookingUserSelect,
-      payments: bookingPaymentSelect,
+      payments: bookingPaymentsInclude,
     },
     query,
   );
@@ -315,7 +322,7 @@ const getBookingDetail = async (id: string, actor: BookingActor) => {
     include: {
       package: bookingPackageDetailSelect,
       user: bookingUserSelect,
-      payments: bookingPaymentSelect,
+      payments: bookingPaymentsInclude,
     },
   });
 
