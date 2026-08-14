@@ -113,7 +113,15 @@ export async function sslcommerzInit(options: {
   }
 
   if (data.status !== "success" || !data.GatewayPageURL) {
-    throw new AppError(502, `SSLCommerz init rejected: ${data.failedreason ?? data.status}`);
+    const reason = data.failedreason || data.status || "unknown";
+    console.error(
+      `[sslcommerz] init rejected (url=${config.sslcommerz_init_url}, sandbox=${config.ssl_commerz_sandbox}): ${reason}`,
+      data,
+    );
+    throw new AppError(
+      502,
+      `SSLCommerz init rejected: ${reason}. Check SSL_COMMERZ_STORE_ID, SSL_COMMERZ_STORE_PASSWORD, SSL_COMMERZ_SANDBOX and SSLCOMMERZ_INIT_URL (see server logs).`,
+    );
   }
   return data;
 }
