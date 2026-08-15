@@ -25,20 +25,20 @@ const d = (y: number, m: number, day: number, h = 12): Date =>
 const daysAgo = (n: number): Date => new Date(Date.now() - n * 86_400_000);
 const daysFromNow = (n: number): Date => new Date(Date.now() + n * 86_400_000);
 
-// Cloudinary's public demo cloud — genuinely hosted, hotlink-safe, never a
-// placeholder that 404s (verified with HEAD requests). One per package is
-// enough; the shape allows several.
+// Real Unsplash photos (images.unsplash.com is hotlink-safe, verified with
+// HEAD requests) — one per package/blog so the home page, cards and hero use
+// genuine destination photography instead of generic placeholder stock.
 const IMAGES = {
-  sundarbans: "https://res.cloudinary.com/demo/image/upload/landscape.jpg",
-  coxsBazar: "https://res.cloudinary.com/demo/image/upload/beach.jpg",
-  bandarban: "https://res.cloudinary.com/demo/image/upload/mountain.jpg",
-  dhaka: "https://res.cloudinary.com/demo/image/upload/street.jpg",
-  sylhet: "https://res.cloudinary.com/demo/image/upload/coffee.jpg",
-  stMartin: "https://res.cloudinary.com/demo/image/upload/couple.jpg",
-  blogCover1: "https://res.cloudinary.com/demo/image/upload/bicycle.jpg",
-  blogCover2: "https://res.cloudinary.com/demo/image/upload/pizza.jpg",
-  blogCover3: "https://res.cloudinary.com/demo/image/upload/sample.jpg",
-  blogCover4: "https://res.cloudinary.com/demo/image/upload/woman.jpg",
+  sundarbans: "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1600&q=80",
+  coxsBazar: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1600&q=80",
+  bandarban: "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?auto=format&fit=crop&w=1600&q=80",
+  dhaka: "https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b?auto=format&fit=crop&w=1600&q=80",
+  sylhet: "https://images.unsplash.com/photo-1501854140801-50d01698950b?auto=format&fit=crop&w=1600&q=80",
+  stMartin: "https://images.unsplash.com/photo-1519046904884-53103b34b206?auto=format&fit=crop&w=1600&q=80",
+  blogCover1: "https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?auto=format&fit=crop&w=1600&q=80",
+  blogCover2: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=1600&q=80",
+  blogCover3: "https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=1600&q=80",
+  blogCover4: "https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?auto=format&fit=crop&w=1600&q=80",
 };
 
 const main = async () => {
