@@ -16,10 +16,11 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  packages TourPackage[] @relation("AgentPackages")
-  bookings Booking[]     @relation("CustomerBookings")
-  reviews  Review[]      @relation("CustomerReviews")
-  posts    BlogPost[]    @relation("AuthorPosts")
+  packages TourPackage[]    @relation("AgentPackages")
+  bookings Booking[]        @relation("CustomerBookings")
+  reviews  Review[]         @relation("CustomerReviews")
+  posts    BlogPost[]       @relation("AuthorPosts")
+  wishlist WishlistItem[]
 
   @@index([role])
   @@index([status])

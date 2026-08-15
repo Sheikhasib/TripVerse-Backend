@@ -21,6 +21,7 @@ model TourPackage {
   agent    User          @relation("AgentPackages", fields: [agentId], references: [id])
   bookings Booking[]
   reviews  Review[]
+  wishlistItems WishlistItem[]
 
   @@index([categoryId])
   @@index([categoryId, price])

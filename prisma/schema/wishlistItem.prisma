@@ -1,0 +1,14 @@
+model WishlistItem {
+  id        String   @id @default(uuid())
+  userId    String
+  packageId String
+
+  createdAt DateTime @default(now())
+
+  user    User         @relation(fields: [userId], references: [id])
+  package TourPackage  @relation(fields: [packageId], references: [id])
+
+  @@unique([userId, packageId])
+  @@index([userId, createdAt])
+  @@map("wishlist_items")
+}

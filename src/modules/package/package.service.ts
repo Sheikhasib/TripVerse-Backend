@@ -20,7 +20,7 @@ const serializePrice = <T extends { price: Prisma.Decimal }>(row: T): T => ({
 });
 
 // Public payloads carry the agent's display info only — never email.
-const publicPackageInclude = {
+export const publicPackageInclude = {
   category: { select: { id: true, name: true, slug: true } },
   agent: { select: { id: true, name: true, avatarUrl: true } },
 } as const;
