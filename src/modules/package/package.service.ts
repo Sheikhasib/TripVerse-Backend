@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { PackageStatus, Role } from "../../../generated/prisma/enums";
+import { PackageStatus, Role, NotificationType } from "../../../generated/prisma/enums";
 import { Prisma } from "../../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { AppError } from "../../utils/appError";
+import { notify } from "../../utils/notification";
 import { slugify } from "../../utils/slugify";
 import {
   ICreatePackagePayload,
@@ -331,6 +332,31 @@ const changePackageStatus = async (
     where: { id: packageId },
     data: { status: payload.status },
   });
+
+  // best-effort in-app notification to the submitting agent (never fails request)
+  const notified = {
+    type:
+      payload.status === PackageStatus.APPROVED
+        ? NotificationType.PACKAGE_APPROVED
+        : NotificationType.PACKAGE_REJECTED,
+    title:
+      payload.status === PackageStatus.APPROVED
+        ? "Package approved"
+        : "Package rejected",
+    message:
+      payload.status === PackageStatus.APPROVED
+        ? `Your package "${tourPackage.title}" has been approved and is now live.`
+        : `Your package "${tourPackage.title}" was rejected. Please review and resubmit.`,
+  };
+  void Promise.allSettled([
+    notify(
+      tourPackage.agentId,
+      notified.type,
+      notified.title,
+      notified.message,
+      `/dashboard/agent/packages/${packageId}`,
+    ),
+  ]);
 
   return serializePrice(updated);
 };

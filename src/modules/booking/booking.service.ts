@@ -1,9 +1,10 @@
 import { Prisma } from "../../../generated/prisma/client";
-import { BookingStatus, PackageStatus, PaymentStatus, Role } from "../../../generated/prisma/enums";
+import { BookingStatus, NotificationType, PackageStatus, PaymentStatus, Role } from "../../../generated/prisma/enums";
 import { prisma } from "../../lib/prisma";
 import { AppError } from "../../utils/appError";
 import { sslcommerzRefund } from "../../lib/sslcommerz";
 import { sendBookingEmail, sendRefundEmail } from "../../utils/email";
+import { notify } from "../../utils/notification";
 import {
   IBookingQuery,
   IBookingSearchQuery,
@@ -223,6 +224,17 @@ const createBooking = async (userId: string, payload: ICreateBooking) => {
       }),
     ]);
   }
+
+  // best-effort in-app notification to the package agent (never fails request)
+  void Promise.allSettled([
+    notify(
+      tourPackage.agentId,
+      NotificationType.BOOKING_CREATED,
+      "New booking received",
+      `A new booking has been placed for "${tourPackage.title}".`,
+      `/dashboard/agent/bookings/${created.id}`,
+    ),
+  ]);
 
   return {
     ...created,
@@ -521,6 +533,48 @@ const updateBookingStatus = async (
         status: to,
       }),
     ]);
+  }
+
+  // best-effort in-app notifications (never fails request). Recipient of a
+  // cancellation depends on the actor: the customer cancels → the agent hears;
+  // the agent cancels → the customer hears; an ADMIN cancels → both hear, since
+  // the admin acts on behalf of the platform, not either side.
+  if (to === BookingStatus.CONFIRMED) {
+    void Promise.allSettled([
+      notify(
+        booking.userId,
+        NotificationType.BOOKING_CONFIRMED,
+        "Booking confirmed",
+        `Your booking for "${booking.package.title}" has been confirmed.`,
+        `/dashboard/bookings/${id}`,
+      ),
+    ]);
+  }
+
+  if (to === BookingStatus.CANCELLED) {
+    const recipients: string[] = [];
+    if (actor.id === booking.userId) {
+      recipients.push(booking.package.agentId);
+    } else if (
+      actor.role === Role.AGENT &&
+      booking.package.agentId === actor.id
+    ) {
+      recipients.push(booking.userId);
+    } else if (actor.role === Role.ADMIN) {
+      recipients.push(booking.userId, booking.package.agentId);
+    }
+
+    void Promise.allSettled(
+      [...new Set(recipients)].map((recipientId) =>
+        notify(
+          recipientId,
+          NotificationType.BOOKING_CANCELLED,
+          "Booking cancelled",
+          `The booking for "${booking.package.title}" has been cancelled.`,
+          `/dashboard/bookings/${id}`,
+        ),
+      ),
+    );
   }
 
   return { ...updated, totalPrice: Number(updated.totalPrice) };

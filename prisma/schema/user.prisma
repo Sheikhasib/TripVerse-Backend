@@ -20,7 +20,8 @@ model User {
   bookings Booking[]        @relation("CustomerBookings")
   reviews  Review[]         @relation("CustomerReviews")
   posts    BlogPost[]       @relation("AuthorPosts")
-  wishlist WishlistItem[]
+  wishlist      WishlistItem[]
+  notifications Notification[]
 
   @@index([role])
   @@index([status])

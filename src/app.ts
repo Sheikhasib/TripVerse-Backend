@@ -20,6 +20,7 @@ import { blogRoutes } from "./modules/blog/blog.route";
 import { dashboardRoutes } from "./modules/dashboard/dashboard.route";
 import { paymentRoutes } from "./modules/payment/payment.route";
 import { wishlistRoutes } from "./modules/wishlist/wishlist.route";
+import { notificationRoutes } from "./modules/notification/notification.route";
 
 const app: Application = express();
 
@@ -117,6 +118,7 @@ app.use("/api/blog", blogRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/wishlist", wishlistRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 app.use(notFoundHandler);
 app.use(globalErrorHandler);
