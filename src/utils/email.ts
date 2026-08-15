@@ -30,6 +30,31 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#039;");
 }
 
+// Wraps a Resend send so failures become a single clean warning line instead
+// of the SDK's noisy multi-line error. Resend can legitimately reject sends
+// (e.g. the default onboarding@resend.dev sender may only deliver to the
+// account owner), so emails are strictly best-effort.
+async function sendWithLog(
+  client: Resend,
+  subject: string,
+  to: string[],
+  html: string,
+  replyTo?: string,
+): Promise<void> {
+  try {
+    await client.emails.send({
+      from: config.email_from || "TripVerse <onboarding@resend.dev>",
+      to,
+      subject,
+      html,
+      ...(replyTo ? { replyTo } : {}),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[email] send failed (${subject}) to ${to.join(", ")}: ${detail}`);
+  }
+}
+
 const emailLayout = (content: string) => `
   <div style="font-family: Arial, Helvetica, sans-serif; max-width: 560px; margin: 0 auto; color: #1a1a1a;">
     <div style="background: #0f766e; padding: 24px; border-radius: 8px 8px 0 0;">
@@ -54,7 +79,6 @@ export const sendContactNotification = async (
     return;
   }
 
-  const from = config.email_from || "TripVerse <onboarding@resend.dev>";
   const createdAt = details.createdAt?.toISOString() ?? "just now";
 
   const content = `
@@ -82,12 +106,12 @@ export const sendContactNotification = async (
     </div>
   `;
 
-  await client.emails.send({
-    from,
-    to: [config.contact_receiver_email],
-    subject: `New contact message: ${details.subject}`,
-    html: emailLayout(content),
-  });
+  await sendWithLog(
+    client,
+    `New contact message: ${details.subject}`,
+    [config.contact_receiver_email],
+    emailLayout(content),
+  );
 };
 
 // Sends a confirmation reply to the person who submitted the form.
@@ -100,7 +124,6 @@ export const sendContactAutoReply = async (
     return;
   }
 
-  const from = config.email_from || "TripVerse <onboarding@resend.dev>";
   const receiverEmail = config.contact_receiver_email;
 
   const content = `
@@ -112,13 +135,13 @@ export const sendContactAutoReply = async (
     </p>
   `;
 
-  await client.emails.send({
-    from,
-    to: [details.email],
-    replyTo: receiverEmail,
-    subject: "We received your message - TripVerse",
-    html: emailLayout(content),
-  });
+  await sendWithLog(
+    client,
+    "We received your message - TripVerse",
+    [details.email],
+    emailLayout(content),
+    receiverEmail,
+  );
 };
 
 // ── Booking emails ─────────────────────────────────────────────────────────
@@ -143,7 +166,6 @@ export const sendBookingEmail = async (
     return;
   }
 
-  const from = config.email_from || "TripVerse <onboarding@resend.dev>";
   const travelDate = details.travelDate.toISOString().slice(0, 10);
 
   const statusCopy: Record<
@@ -205,12 +227,12 @@ export const sendBookingEmail = async (
     </table>
   `;
 
-  await client.emails.send({
-    from,
-    to: [details.email],
-    subject: copy.subject,
-    html: emailLayout(content),
-  });
+  await sendWithLog(
+    client,
+    copy.subject,
+    [details.email],
+    emailLayout(content),
+  );
 };
 
 // Informs the customer that a paid booking was cancelled and the payment has
@@ -233,7 +255,6 @@ export const sendRefundEmail = async (
     return;
   }
 
-  const from = config.email_from || "TripVerse <onboarding@resend.dev>";
   const travelDate = details.travelDate.toISOString().slice(0, 10);
 
   const content = `
@@ -271,10 +292,10 @@ export const sendRefundEmail = async (
     </p>
   `;
 
-  await client.emails.send({
-    from,
-    to: [details.email],
-    subject: "Booking cancelled & refund issued - TripVerse",
-    html: emailLayout(content),
-  });
+  await sendWithLog(
+    client,
+    "Booking cancelled & refund issued - TripVerse",
+    [details.email],
+    emailLayout(content),
+  );
 };
