@@ -4,6 +4,8 @@ import auth from "../../middleware/auth";
 import validateRequest from "../../middleware/validateRequest";
 import { blogController } from "./blog.controller";
 import { blogValidations } from "./blog.validation";
+import { blogCommentController } from "./blogComment.controller";
+import { blogCommentValidations } from "./blogComment.validation";
 
 const router = Router();
 
@@ -47,6 +49,39 @@ router.post(
   auth(Role.AGENT, Role.ADMIN),
   validateRequest({ body: blogValidations.createPostSchema }),
   blogController.createPost,
+);
+
+// ── Comments ────────────────────────────────────────────────────────────────
+// NOTE: this block stays before PATCH /:id/status so DELETE /comments/:id is
+// never shadowed — and no bare PATCH /:slug or DELETE /:slug is ever added.
+
+// 4a. Public comments for a post (PUBLISHED + non-deleted post only)
+router.get(
+  "/:slug/comments",
+  validateRequest({
+    params: blogValidations.postSlugParamsSchema,
+    query: blogCommentValidations.commentQuerySchema,
+  }),
+  blogCommentController.getPostComments,
+);
+
+// 4b. Create a comment (any authenticated user)
+router.post(
+  "/:slug/comments",
+  auth(),
+  validateRequest({
+    params: blogValidations.postSlugParamsSchema,
+    body: blogCommentValidations.createCommentSchema,
+  }),
+  blogCommentController.createComment,
+);
+
+// 4c. Soft delete a comment (owner or ADMIN)
+router.delete(
+  "/comments/:id",
+  auth(),
+  validateRequest({ params: blogCommentValidations.commentParamsSchema }),
+  blogCommentController.deleteComment,
 );
 
 // 5. Publish/unpublish post (admin) — registered before PATCH /:id for clarity

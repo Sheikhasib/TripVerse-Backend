@@ -14,7 +14,7 @@ import {
 } from "./blog.interface";
 
 // Public payloads carry the author's display info only — never email/role.
-const publicAuthorSelect = {
+export const publicAuthorSelect = {
   select: { id: true, name: true, avatarUrl: true },
 };
 

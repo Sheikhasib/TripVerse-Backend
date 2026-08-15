@@ -22,6 +22,7 @@ model User {
   posts    BlogPost[]       @relation("AuthorPosts")
   wishlist      WishlistItem[]
   notifications Notification[]
+  comments      BlogComment[] @relation("UserComments")
 
   @@index([role])
   @@index([status])

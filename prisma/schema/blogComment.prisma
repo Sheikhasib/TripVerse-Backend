@@ -1,0 +1,21 @@
+model BlogComment {
+  id        String   @id @default(uuid())
+  content   String   @db.Text
+  isDeleted Boolean  @default(false)
+
+  postId   String
+  userId   String
+  parentId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  post    BlogPost     @relation("PostComments", fields: [postId], references: [id])
+  user    User         @relation("UserComments", fields: [userId], references: [id])
+  parent  BlogComment? @relation("CommentReplies", fields: [parentId], references: [id])
+  replies BlogComment[] @relation("CommentReplies")
+
+  @@index([postId, isDeleted, createdAt])
+  @@index([parentId])
+  @@map("blog_comments")
+}
