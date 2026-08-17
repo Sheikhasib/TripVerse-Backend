@@ -1,7 +1,8 @@
 model Review {
-  id     String @id @default(uuid())
-  rating Int
-  comment String
+  id        String @id @default(uuid())
+  rating    Int
+  comment   String
+  isDeleted Boolean @default(false)
 
   userId    String
   packageId String

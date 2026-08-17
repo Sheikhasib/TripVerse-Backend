@@ -4,6 +4,11 @@ export interface ICreateReviewPayload {
   comment: string;
 }
 
+export interface IUpdateReviewPayload {
+  rating?: number;
+  comment?: string;
+}
+
 export interface IReviewQuery {
   page?: number;
   limit?: number;

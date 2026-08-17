@@ -1,7 +1,35 @@
-import { PackageStatus, BookingStatus } from "../../../generated/prisma/enums";
+import { PackageStatus, BookingStatus, Role } from "../../../generated/prisma/enums";
+import { Prisma } from "../../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { AppError } from "../../utils/appError";
-import { ICreateReviewPayload, IReviewQuery } from "./review.interface";
+import {
+  ICreateReviewPayload,
+  IReviewQuery,
+  IUpdateReviewPayload,
+} from "./review.interface";
+
+// Shared rating recompute — the single source of truth for the package
+// average. create/update/delete all call it inside their own transaction, and
+// the aggregate always filters `isDeleted: false` so a removed rating never
+// counts (otherwise delete would recompute an unchanged average).
+const recomputePackageRating = async (
+  tx: Prisma.TransactionClient,
+  packageId: string,
+): Promise<number> => {
+  const { _avg } = await tx.review.aggregate({
+    where: { packageId, isDeleted: false },
+    _avg: { rating: true },
+  });
+
+  const rating = Math.round((_avg.rating ?? 0) * 10) / 10;
+
+  await tx.tourPackage.update({
+    where: { id: packageId },
+    data: { rating },
+  });
+
+  return rating;
+};
 
 // 1. Create a review (USER only) — gated, unique per user+package, and
 //    recalculates the package rating in the same transaction.
@@ -45,7 +73,9 @@ const createReview = async (userId: string, payload: ICreateReviewPayload) => {
     }
 
     // Friendly duplicate check — @@unique([userId, packageId]) backstops any
-    // race via P2002 (mapped to 409 by the global handler).
+    // race via P2002 (mapped to 409 by the global handler). Deliberately NOT
+    // filtered by isDeleted: soft delete keeps the row, so re-reviewing after
+    // a delete still fails with this friendly 409.
     const existingReview = await tx.review.findFirst({
       where: { userId, packageId: payload.packageId },
       select: { id: true },
@@ -64,19 +94,7 @@ const createReview = async (userId: string, payload: ICreateReviewPayload) => {
       },
     });
 
-    // Recompute the package rating from all of its reviews, rounded to one
-    // decimal, inside the same transaction so a stale average is never written.
-    const { _avg } = await tx.review.aggregate({
-      where: { packageId: payload.packageId },
-      _avg: { rating: true },
-    });
-
-    const rating = Math.round((_avg.rating ?? 0) * 10) / 10;
-
-    await tx.tourPackage.update({
-      where: { id: payload.packageId },
-      data: { rating },
-    });
+    const rating = await recomputePackageRating(tx, payload.packageId);
 
     return { review: createdReview, rating };
   });
@@ -84,6 +102,7 @@ const createReview = async (userId: string, payload: ICreateReviewPayload) => {
 
 // 2. List reviews for a package (public) — paginated; the package must be
 //    approved and not deleted so unpublished package reviews never leak.
+//    Deleted reviews are excluded so a removed rating stops counting.
 const listPackageReviews = async (
   packageId: string,
   query: IReviewQuery,
@@ -105,9 +124,11 @@ const listPackageReviews = async (
   const limit = query.limit ?? 10;
   const skip = (page - 1) * limit;
 
+  const where = { packageId, isDeleted: false };
+
   const [data, total] = await Promise.all([
     prisma.review.findMany({
-      where: { packageId },
+      where,
       select: {
         id: true,
         rating: true,
@@ -120,7 +141,7 @@ const listPackageReviews = async (
       skip,
       take: limit,
     }),
-    prisma.review.count({ where: { packageId } }),
+    prisma.review.count({ where }),
   ]);
 
   return {
@@ -134,7 +155,84 @@ const listPackageReviews = async (
   };
 };
 
+// 3. Update a review (USER, author only). A foreign id or a removed review is
+//    a uniform 404 — never a leak. The package average is recomputed in the
+//    same transaction.
+const updateReview = async (
+  userId: string,
+  reviewId: string,
+  payload: IUpdateReviewPayload,
+) => {
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.review.findFirst({
+      where: { id: reviewId, userId, isDeleted: false },
+      select: { id: true, packageId: true },
+    });
+
+    if (!existing) {
+      throw new AppError(404, "Review not found.");
+    }
+
+    const updated = await tx.review.update({
+      where: { id: reviewId },
+      data: {
+        ...(payload.rating !== undefined ? { rating: payload.rating } : {}),
+        ...(payload.comment !== undefined ? { comment: payload.comment } : {}),
+      },
+    });
+
+    await recomputePackageRating(tx, existing.packageId);
+
+    // The response's rating is the authoritative value from the package row,
+    // not the input — the client's displayed average is never stale.
+    const fresh = await tx.tourPackage.findUnique({
+      where: { id: existing.packageId },
+      select: { rating: true },
+    });
+
+    return { review: updated, rating: fresh?.rating ?? 0 };
+  });
+};
+
+// 4. Soft delete a review (author or ADMIN) — the average is recomputed so the
+//    removed rating stops counting. Foreign id / repeat delete → uniform 404.
+const deleteReview = async (
+  userId: string,
+  role: Role,
+  reviewId: string,
+) => {
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.review.findFirst({
+      where: { id: reviewId, isDeleted: false },
+      select: { id: true, packageId: true, userId: true },
+    });
+
+    if (!existing) {
+      throw new AppError(404, "Review not found.");
+    }
+
+    if (role !== Role.ADMIN && existing.userId !== userId) {
+      throw new AppError(404, "Review not found.");
+    }
+
+    const removed = await tx.review.updateMany({
+      where: { id: reviewId, isDeleted: false },
+      data: { isDeleted: true },
+    });
+
+    if (removed.count === 0) {
+      throw new AppError(404, "Review not found.");
+    }
+
+    const rating = await recomputePackageRating(tx, existing.packageId);
+
+    return { reviewId, rating };
+  });
+};
+
 export const reviewService = {
   createReview,
   listPackageReviews,
+  updateReview,
+  deleteReview,
 };
