@@ -40,16 +40,17 @@ const clearAuthCookies = (res: Response) => {
   res.clearCookie("refreshToken", cookieOptions);
 };
 
-// Register controller
+// Register controller — stages the account in Redis and emails an OTP; the
+// user row is created by verify-email.
 const registerUser = catchAsync(
   async (req: Request, res: Response, next: NextFunction) => {
-    const user = await authService.registerUser(req.body);
+    await authService.registerUser(req.body);
 
     sendResponse(res, {
       success: true,
       statusCode: httpStatus.CREATED,
-      message: "User Registered successfully.",
-      data: user,
+      message: "Verification OTP sent to your email.",
+      data: null,
     });
   },
 );
@@ -102,6 +103,68 @@ const demoLogin = catchAsync(
       statusCode: httpStatus.OK,
       message: "Demo user logged in successfully",
       data: { accessToken, refreshToken, user },
+    });
+  },
+);
+
+// Verify email controller — creates the user and auto-logs-in (tokens as
+// cookies + body), mirroring the reference backend.
+const verifyEmail = catchAsync(
+  async (req: Request, res: Response, next: NextFunction) => {
+    const { accessToken, refreshToken, user } = await authService.verifyEmail(
+      req.body,
+    );
+
+    setAuthCookies(res, { accessToken, refreshToken });
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message: "Email verified successfully",
+      data: { accessToken, refreshToken, user },
+    });
+  },
+);
+
+// Resend verification controller — always 200 (no enumeration).
+const resendVerification = catchAsync(
+  async (req: Request, res: Response, next: NextFunction) => {
+    await authService.resendVerification(req.body);
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message: "Verification OTP sent to your email.",
+      data: null,
+    });
+  },
+);
+
+// Forgot password controller — always 200 (no enumeration).
+const forgotPassword = catchAsync(
+  async (req: Request, res: Response, next: NextFunction) => {
+    await authService.forgotPassword(req.body);
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message:
+        "If an account with that email exists, a password reset OTP has been sent.",
+      data: null,
+    });
+  },
+);
+
+// Reset password controller
+const resetPassword = catchAsync(
+  async (req: Request, res: Response, next: NextFunction) => {
+    await authService.resetPassword(req.body);
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message: "Password reset successfully. Please login again.",
+      data: null,
     });
   },
 );
@@ -175,6 +238,10 @@ const getMe = catchAsync(
 
 export const authController = {
   registerUser,
+  verifyEmail,
+  resendVerification,
+  forgotPassword,
+  resetPassword,
   loginUser,
   googleLogin,
   demoLogin,

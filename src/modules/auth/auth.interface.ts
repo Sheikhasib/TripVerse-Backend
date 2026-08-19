@@ -25,3 +25,22 @@ export interface IDemoLoginPayload {
 export interface IRefreshTokenPayload {
   refreshToken: string;
 }
+
+export interface IVerifyEmailPayload {
+  email: string;
+  otp: string;
+}
+
+export interface IResendVerificationPayload {
+  email: string;
+}
+
+export interface IForgotPasswordPayload {
+  email: string;
+}
+
+export interface IResetPasswordPayload {
+  email: string;
+  otp: string;
+  newPassword: string;
+}

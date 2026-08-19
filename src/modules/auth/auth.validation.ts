@@ -46,10 +46,43 @@ const refreshTokenSchema = z.object({
   refreshToken: z.string().min(1).optional(),
 });
 
+const emailSchema = z
+  .string({ required_error: "Email is required" })
+  .trim()
+  .email("Please provide a valid email");
+
+const otpSchema = z
+  .string({ required_error: "OTP is required" })
+  .length(6, "OTP must be exactly 6 digits");
+
+const verifyEmailSchema = z.object({
+  email: emailSchema,
+  otp: otpSchema,
+});
+
+const resendVerificationSchema = z.object({
+  email: emailSchema,
+});
+
+const forgotPasswordSchema = z.object({
+  email: emailSchema,
+});
+
+const resetPasswordSchema = z.object({
+  email: emailSchema,
+  otp: otpSchema,
+  newPassword: z
+    .string({ required_error: "New password is required" })
+    .min(6, "Password must be at least 6 characters")
+    .max(72, "Password must be at most 72 characters"),
+});
+
 export type TRegisterSchema = z.infer<typeof registerSchema>;
 export type TLoginSchema = z.infer<typeof loginSchema>;
 export type TGoogleLoginSchema = z.infer<typeof googleLoginSchema>;
 export type TRefreshTokenSchema = z.infer<typeof refreshTokenSchema>;
+export type TVerifyEmailSchema = z.infer<typeof verifyEmailSchema>;
+export type TResetPasswordSchema = z.infer<typeof resetPasswordSchema>;
 
 export const authValidations = {
   registerSchema,
@@ -57,4 +90,8 @@ export const authValidations = {
   googleLoginSchema,
   demoLoginSchema,
   refreshTokenSchema,
+  verifyEmailSchema,
+  resendVerificationSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
 };

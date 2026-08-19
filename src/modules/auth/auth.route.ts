@@ -41,4 +41,30 @@ router.post("/logout", auth(), authController.logoutUser);
 
 router.get("/me", auth(), authController.getMe);
 
+// Step 21 — email verification + password reset (all public; rate-limited via
+// authLimiter in app.ts to bound OTP brute force + email bombing)
+router.post(
+  "/verify-email",
+  validateRequest({ body: authValidations.verifyEmailSchema }),
+  authController.verifyEmail,
+);
+
+router.post(
+  "/resend-verification",
+  validateRequest({ body: authValidations.resendVerificationSchema }),
+  authController.resendVerification,
+);
+
+router.post(
+  "/forgot-password",
+  validateRequest({ body: authValidations.forgotPasswordSchema }),
+  authController.forgotPassword,
+);
+
+router.post(
+  "/reset-password",
+  validateRequest({ body: authValidations.resetPasswordSchema }),
+  authController.resetPassword,
+);
+
 export const authRoutes = router;

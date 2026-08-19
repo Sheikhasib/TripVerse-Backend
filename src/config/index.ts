@@ -65,6 +65,16 @@ const envSchema = z.object({
   CONTACT_RECEIVER_EMAIL: z.string().email().optional(),
   EMAIL_FROM: z.string().optional(),
 
+  // Email verification + password reset (Step 21) — Redis OTP store + Nodemailer.
+  // All optional so the app boots without them (e.g. Vercel prod); the auth
+  // endpoints then respond with a clean 503 "not configured" instead of crashing.
+  REDIS_USER: z.string().optional(),
+  REDIS_PASSWORD: z.string().optional(),
+  REDIS_HOST: z.string().optional(),
+  REDIS_PORT: z.string().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASSWORD: z.string().optional(),
+
   CLOUDINARY_CLOUD_NAME: z.string().min(1, "CLOUDINARY_CLOUD_NAME is required"),
   CLOUDINARY_API_KEY: z.string().min(1, "CLOUDINARY_API_KEY is required"),
   CLOUDINARY_API_SECRET: z.string().min(1, "CLOUDINARY_API_SECRET is required"),
@@ -129,6 +139,14 @@ const config = {
   resend_api_key: env.RESEND_API_KEY,
   contact_receiver_email: env.CONTACT_RECEIVER_EMAIL,
   email_from: env.EMAIL_FROM,
+
+  // Email verification + password reset (Step 21)
+  redis_user: env.REDIS_USER,
+  redis_password: env.REDIS_PASSWORD,
+  redis_host: env.REDIS_HOST,
+  redis_port: env.REDIS_PORT,
+  smtp_user: env.SMTP_USER,
+  smtp_password: env.SMTP_PASSWORD,
 
   cloudinary_cloud_name: env.CLOUDINARY_CLOUD_NAME,
   cloudinary_api_key: env.CLOUDINARY_API_KEY,

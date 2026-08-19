@@ -21,7 +21,7 @@ function getResend(): Resend | null {
   return resend;
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -55,7 +55,7 @@ async function sendWithLog(
   }
 }
 
-const emailLayout = (content: string) => `
+export const emailLayout = (content: string) => `
   <div style="font-family: Arial, Helvetica, sans-serif; max-width: 560px; margin: 0 auto; color: #1a1a1a;">
     <div style="background: #0f766e; padding: 24px; border-radius: 8px 8px 0 0;">
       <span style="color: #ffffff; font-size: 18px; font-weight: bold;">TripVerse</span>

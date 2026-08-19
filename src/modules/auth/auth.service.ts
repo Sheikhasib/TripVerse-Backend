@@ -1,18 +1,41 @@
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { JwtPayload, SignOptions } from "jsonwebtoken";
 import config from "../../config";
 import { prisma } from "../../lib/prisma";
 import { googleClient } from "../../lib/googleAuth";
+import { getRedis } from "../../lib/redis";
 import { AppError } from "../../utils/appError";
 import { jwtUtils } from "../../utils/jwt";
+import {
+  sendForgotPasswordOtpEmail,
+  sendPasswordResetSuccessEmail,
+  sendVerificationOtpEmail,
+  sendWelcomeEmail,
+} from "../../utils/authEmail";
 import { Role } from "../../../generated/prisma/enums";
 import {
   IAuth,
   IDemoLoginPayload,
+  IForgotPasswordPayload,
   IGoogleLoginPayload,
   ILoginUser,
   IRefreshTokenPayload,
+  IResendVerificationPayload,
+  IResetPasswordPayload,
+  IVerifyEmailPayload,
 } from "./auth.interface";
+
+const OTP_EXPIRATION_SECONDS = 5 * 60; // 5 minutes — matches the reference backend
+
+// Redis OTP store accessor — 503 when unconfigured (never a boot-time crash).
+const getRedisClient = async () => {
+  const client = await getRedis();
+  if (!client) {
+    throw new AppError(503, "Email verification is not configured.");
+  }
+  return client;
+};
 
 const buildTokenPayload = (user: {
   id: string;
@@ -56,9 +79,13 @@ const sanitizeUser = <T extends { password: string | null }>(user: T) => {
   return rest;
 };
 
-// ── Register ────────────────────────────────────────────────────────────
+// ── Register (staged in Redis, verified via OTP) ─────────────────────────
+// Follows the reference backend: a credential signup does NOT create a DB row.
+// It hashes the password, stages the payload in Redis, emails a 6-digit OTP,
+// and the user row is only created on successful verification.
 const registerUser = async (payload: IAuth) => {
-  const { name, email, password, phone, role } = payload;
+  const { name, password, phone, role } = payload;
+  const email = payload.email.trim().toLowerCase();
 
   // Only users/agents can self-register; admins are created via demo-login/seed
   if (role && role !== "USER" && role !== "AGENT") {
@@ -77,19 +104,228 @@ const registerUser = async (payload: IAuth) => {
     Number(config.bcrypt_salt_rounds),
   );
 
+  const client = await getRedisClient();
+
+  // Registration OTP (the value the user types back into the API)
+  const otpKey = `tripverse:register-otp:${email}`;
+  const otpValue = crypto.randomInt(100000, 1000000).toString();
+
+  await client.set(otpKey, otpValue, {
+    expiration: {
+      type: "EX",
+      value: OTP_EXPIRATION_SECONDS,
+    },
+  });
+
+  // Staged registration payload — password is already hashed here, exactly
+  // like the reference, so a Redis leak never exposes a plaintext password.
+  const registrationDataKey = `tripverse:register-data:${email}`;
+  const redisUserDataPayload = {
+    name,
+    email,
+    password: hashedPassword,
+    phone,
+    role: role || "USER",
+  };
+
+  await client.set(registrationDataKey, JSON.stringify(redisUserDataPayload), {
+    expiration: {
+      type: "EX",
+      value: OTP_EXPIRATION_SECONDS,
+    },
+  });
+
+  // Best-effort email — a send failure never fails registration (TripVerse
+  // convention); the user can recover via resend-verification.
+  void Promise.allSettled([
+    sendVerificationOtpEmail({ email, name, otp: otpValue }),
+  ]);
+};
+
+// ── Verify email (creates the user + auto-login) ─────────────────────────
+// Follows the reference backend: OTP is read from Redis, deleted, then the
+// staged payload is materialised as a real user row with emailVerified: true,
+// and tokens are issued so the user is logged in immediately.
+const verifyEmail = async (payload: IVerifyEmailPayload) => {
+  const { otp } = payload;
+  const email = payload.email.trim().toLowerCase();
+
+  // Defensive — registration already 409s on an existing email, so a user row
+  // here means the email was verified earlier through another flow.
+  const isUserExists = await prisma.user.findUnique({ where: { email } });
+  if (isUserExists) {
+    throw new AppError(409, "Email is already verified");
+  }
+
+  const client = await getRedisClient();
+
+  const otpKey = `tripverse:register-otp:${email}`;
+  const redisOTP = await client.get(otpKey);
+
+  if (!redisOTP || redisOTP !== otp) {
+    throw new AppError(400, "Invalid or expired OTP.");
+  }
+
+  // OTP is single-use — delete it before the user row is created.
+  await client.del(otpKey);
+
+  const registrationDataKey = `tripverse:register-data:${email}`;
+  const redisUserData = await client.get(registrationDataKey);
+
+  if (!redisUserData) {
+    throw new AppError(400, "Invalid or expired OTP.");
+  }
+
+  const userPayload = JSON.parse(redisUserData) as IAuth;
+
   const createdUser = await prisma.user.create({
     data: {
-      name,
-      email,
-      password: hashedPassword,
+      name: userPayload.name,
+      email: userPayload.email,
+      password: userPayload.password,
+      phone: userPayload.phone,
+      role: userPayload.role || "USER",
       authProvider: "CREDENTIAL",
-      role: role || "USER",
-      phone,
+      status: "ACTIVE",
+      emailVerified: true,
     },
     omit: { password: true },
   });
 
-  return createdUser;
+  // Staged payload consumed — nothing remains in Redis.
+  await client.del(registrationDataKey);
+
+  void Promise.allSettled([
+    sendWelcomeEmail({ email: createdUser.email, name: createdUser.name }),
+  ]);
+
+  const tokens = issueTokens(createdUser);
+
+  return { ...tokens, user: createdUser };
+};
+
+// ── Resend verification OTP ──────────────────────────────────────────────
+// Re-mints a fresh OTP for a still-staged registration. Uniform 200 — if the
+// staging data is gone (never registered / already verified) this no-ops.
+const resendVerification = async (payload: IResendVerificationPayload) => {
+  const email = payload.email.trim().toLowerCase();
+
+  const client = await getRedisClient();
+
+  const registrationDataKey = `tripverse:register-data:${email}`;
+  const redisUserData = await client.get(registrationDataKey);
+
+  if (!redisUserData) {
+    return;
+  }
+
+  const userPayload = JSON.parse(redisUserData) as IAuth;
+
+  const otpKey = `tripverse:register-otp:${email}`;
+  const otpValue = crypto.randomInt(100000, 1000000).toString();
+
+  await client.set(otpKey, otpValue, {
+    expiration: {
+      type: "EX",
+      value: OTP_EXPIRATION_SECONDS,
+    },
+  });
+
+  void Promise.allSettled([
+    sendVerificationOtpEmail({ email, name: userPayload.name, otp: otpValue }),
+  ]);
+};
+
+// ── Forgot password ──────────────────────────────────────────────────────
+// Emails a reset OTP to verified CREDENTIAL accounts. Deliberately returns a
+// uniform 200 whether or not the email exists / is eligible (no enumeration —
+// the reference throws "User not found", but TripVerse never leaks existence).
+const forgotPassword = async (payload: IForgotPasswordPayload) => {
+  const email = payload.email.trim().toLowerCase();
+
+  const isUserExists = await prisma.user.findUnique({ where: { email } });
+
+  if (
+    !isUserExists ||
+    isUserExists.isDeleted ||
+    isUserExists.status === "SUSPENDED" ||
+    !isUserExists.emailVerified ||
+    isUserExists.authProvider === "GOOGLE"
+  ) {
+    // Google-only accounts reset via Google; everyone else silently no-ops.
+    return;
+  }
+
+  const client = await getRedisClient();
+
+  const otp = crypto.randomInt(100000, 1000000).toString();
+  const key = `tripverse:forgot-password-otp:${isUserExists.email}`;
+
+  await client.set(key, otp, {
+    expiration: {
+      type: "EX",
+      value: OTP_EXPIRATION_SECONDS,
+    },
+  });
+
+  void Promise.allSettled([
+    sendForgotPasswordOtpEmail({
+      email: isUserExists.email,
+      name: isUserExists.name,
+      otp,
+    }),
+  ]);
+};
+
+// ── Reset password ───────────────────────────────────────────────────────
+// Validates the OTP against Redis, then replaces the hash and bumps
+// tokenVersion so every existing session dies (TripVerse logout semantics).
+const resetPassword = async (payload: IResetPasswordPayload) => {
+  const { newPassword, otp } = payload;
+  const email = payload.email.trim().toLowerCase();
+
+  const isUserExists = await prisma.user.findUnique({ where: { email } });
+
+  if (
+    !isUserExists ||
+    isUserExists.isDeleted ||
+    isUserExists.status === "SUSPENDED" ||
+    isUserExists.authProvider === "GOOGLE"
+  ) {
+    throw new AppError(400, "Invalid or expired OTP.");
+  }
+
+  const client = await getRedisClient();
+
+  const key = `tripverse:forgot-password-otp:${isUserExists.email}`;
+  const redisOTP = await client.get(key);
+
+  if (!redisOTP || redisOTP !== otp) {
+    throw new AppError(400, "Invalid or expired OTP.");
+  }
+
+  const hashedNewPassword = await bcrypt.hash(
+    newPassword,
+    Number(config.bcrypt_salt_rounds),
+  );
+
+  await prisma.user.update({
+    where: { email: isUserExists.email },
+    data: {
+      password: hashedNewPassword,
+      tokenVersion: { increment: 1 },
+    },
+  });
+
+  // Single-use OTP — delete after a successful reset.
+  await client.del(key);
+
+  void Promise.allSettled([
+    sendPasswordResetSuccessEmail({
+      email: isUserExists.email,
+      name: isUserExists.name,
+    }),
+  ]);
 };
 
 // ── Login ───────────────────────────────────────────────────────────────
@@ -281,6 +517,10 @@ const getMeFromDB = async (userId: string) => {
 
 export const authService = {
   registerUser,
+  verifyEmail,
+  resendVerification,
+  forgotPassword,
+  resetPassword,
   loginUser,
   googleLogin,
   demoLogin,
