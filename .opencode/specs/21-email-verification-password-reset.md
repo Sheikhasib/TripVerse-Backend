@@ -46,8 +46,8 @@ Both flows use short-lived OTPs in Redis, not JWTs and not DB-stored tokens.
 - `src/modules/auth/auth.service.ts` — `registerUser` (rewrite to stage),
   `issueTokens`, `sanitizeUser`, `buildTokenPayload` (reuse for auto-login)
 - `prisma/schema/user.prisma` — `emailVerified` already present
-- `src/app/templates/` — EJS email templates (reference-style `*.ejs`), rendered
-  via the new `src/app/templates/index.ts` `renderTemplate`
+- `src/templates/` — EJS email templates (reference-style `*.ejs`), rendered
+  via the new `src/templates/index.ts` `renderTemplate`
 - `src/config/index.ts` — add Redis + SMTP env keys
 - `src/app.ts` — extend `authLimiter` paths
 - `src/server.ts` — guarded Redis connect at boot
@@ -122,8 +122,8 @@ in try/catch, log success/warning (guarded, never crashes boot).
 ## Nodemailer senders — `src/utils/authEmail.ts` (new)
 
 Best-effort, no-op when `transporter` is null (log a warn line), same spirit as
-`sendWithLog`. Each sender renders an EJS template from `src/app/templates/`
-(via `renderTemplate` in `src/app/templates/index.ts` — mirrors the reference's
+`sendWithLog`. Each sender renders an EJS template from `src/templates/`
+(via `renderTemplate` in `src/templates/index.ts` — mirrors the reference's
 `ejs.renderFile(path.join(process.cwd(), "src/app/templates/..."))`, with path
 fallbacks so it also works inside the Vercel bundle where the templates are
 copied to `api/templates/`):
@@ -135,7 +135,7 @@ copied to `api/templates/`):
 
 (Template content matches the reference structure, rebranded PH → TripVerse;
 `<%= %>` auto-escapes so no manual `escapeHtml` needed. `esbuild.vercel.mjs`
-copies `src/app/templates` → `api/templates` after bundling so `ejs.renderFile`
+copies `src/templates` → `api/templates` after bundling so `ejs.renderFile`
 can read them at runtime on Vercel.)
 
 ## Auth module changes — `src/modules/auth`
@@ -228,12 +228,12 @@ app.use("/api/auth/reset-password", authLimiter);
 - `src/lib/redis.ts`
 - `src/lib/nodemailer.ts`
 - `src/utils/authEmail.ts`
-- `src/app/templates/` — `registration-user-otp.ejs`, `forgot-password.ejs`,
+- `src/templates/` — `registration-user-otp.ejs`, `forgot-password.ejs`,
   `welcome-email.ejs`, `reset-password-success.ejs` + `index.ts` (`renderTemplate`)
 
 **Change:**
 - `package.json` (deps: `redis@^6.2.1`, `nodemailer`, `ejs`, `@types/ejs`)
-- `esbuild.vercel.mjs` (copy `src/app/templates` → `api/templates` after bundling)
+- `esbuild.vercel.mjs` (copy `src/templates` → `api/templates` after bundling)
 - `.env.example` (Redis + SMTP block)
 - `src/config/index.ts` (6 new optional env keys)
 - `src/server.ts` (guarded Redis connect)

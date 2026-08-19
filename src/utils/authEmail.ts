@@ -1,6 +1,6 @@
 import config from "../config";
 import { transporter } from "../lib/nodemailer";
-import { renderTemplate } from "../app/templates";
+import { renderTemplate } from "../templates";
 
 // Best-effort Nodemailer senders for the auth flows (Step 21) — mirrors the
 // reference backend's transporter.sendMail calls with EJS templates rendered
