@@ -99,12 +99,25 @@ const registerUser = async (payload: IAuth) => {
     throw new AppError(409, "User with this email already exists");
   }
 
+  const client = await getRedisClient();
+
+  // A registration is already staged for this email — 409 instead of silently
+  // overwriting the pending OTP/data (an attacker must not be able to kill a
+  // victim's in-flight registration). The pending flow continues via
+  // resend-verification.
+  const registrationDataKey = `tripverse:register-data:${email}`;
+  const pendingRegistration = await client.get(registrationDataKey);
+  if (pendingRegistration) {
+    throw new AppError(
+      409,
+      "Registration is pending verification. Check your email or resend the OTP.",
+    );
+  }
+
   const hashedPassword = await bcrypt.hash(
     password,
     Number(config.bcrypt_salt_rounds),
   );
-
-  const client = await getRedisClient();
 
   // Registration OTP (the value the user types back into the API)
   const otpKey = `tripverse:register-otp:${email}`;
@@ -119,7 +132,6 @@ const registerUser = async (payload: IAuth) => {
 
   // Staged registration payload — password is already hashed here, exactly
   // like the reference, so a Redis leak never exposes a plaintext password.
-  const registrationDataKey = `tripverse:register-data:${email}`;
   const redisUserDataPayload = {
     name,
     email,
