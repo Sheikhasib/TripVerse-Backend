@@ -6,7 +6,8 @@
     "moduleResolution": "bundler",
     "target": "ES2023",
     "types": [
-      "node"
+      "node",
+      "vitest/globals"
     ],
     "sourceMap": true,
     "declaration": true,
@@ -21,6 +22,8 @@
   "include": [
     "src/**/*",
     "api/**/*",
+    "tests/**/*",
+    "vitest.config.ts",
     // "prisma.config.ts"
   ],
   "exclude": [

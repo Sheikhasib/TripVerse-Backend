@@ -42,7 +42,7 @@ app.use(
   }),
 );
 
-if (config.node_env !== "production") {
+if (config.node_env === "development") {
   app.use(morgan("dev"));
 }
 
@@ -50,12 +50,14 @@ app.use(express.json({ limit: "100kb" }));
 app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 app.use(cookieParser());
 
-// Strict limiter — auth endpoints, brute-force protection
+// Strict limiter — auth endpoints, brute-force protection.
+// Skipped in tests so the suites can exercise every auth path freely.
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === "test",
   message: {
     success: false,
     message: "Too many attempts. Please try again in 15 minutes.",
@@ -68,6 +70,7 @@ const apiLimiter = rateLimit({
   limit: 100,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === "test",
   message: {
     success: false,
     message: "Too many requests. Please try again later.",

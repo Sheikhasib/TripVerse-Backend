@@ -28,6 +28,8 @@ Verify with `GET /health` → `{ success: true, db: "connected" }`.
 | `npx prisma migrate dev --name <name>` | Create/apply a migration |
 | `npx prisma db seed` | Run `prisma/seed.ts` (exists in package config; script not built yet) |
 | `npm run build:vercel` | Manually rebuild `api/index.js` bundle (auto via pre-commit hook) |
+| `npm test` | Vitest suite (67 tests, 10 suites) against `DATABASE_URL_TEST` |
+| `npx tsc --noEmit` | Typecheck (also validates test files) |
 
 `prisma.config.ts` supplies the schema path, so **no `--schema=` flag is needed**. Use `npx tsc --noEmit` for a typecheck.
 
@@ -75,5 +77,19 @@ Verify with `GET /health` → `{ success: true, db: "connected" }`.
 
 ## Notable absences
 
-- No feature modules, no seed script yet (Steps 4+)
-- No test framework, no CI/CD, no Docker, no lint, no formatter
+- No seed script yet (Step 4+), no CI/CD, no Docker, no lint, no formatter
+
+## Tests (Step 24)
+
+- **Vitest 4 + supertest** under `tests/` (auth, booking, payment, review, wishlist, notification,
+  blog, contact, dashboard, email). `npm test` = `vitest run`; `fileParallelism: false` (sequential).
+- **`DATABASE_URL_TEST` points at the shared live DB** (user-approved: no disposable Postgres is
+  available) — the suite **never truncates**. Tests use unique UUID keys; `tests/setup.ts` cleanup
+  deletes only the rows a file created, children before parents. **Never add truncation against this
+  DB.** Assert by unique slug/key/deltas, never absolute list counts (real data lives in the DB).
+- External providers are mocked at their lib boundary per file: `src/lib/sslcommerz`,
+  `src/utils/email`, `src/lib/redis` + `src/utils/authEmail` + `src/lib/googleAuth` (auth), the
+  `resend` package (email.test). `prisma` stays real. Mock specifiers from `tests/` MUST use the
+  `../src/...` form (a `../../src/...` mock silently misses the app's import graph).
+- Rate limiters skip when `NODE_ENV === "test"`; `NODE_ENV="test"` is in the config Zod enum.
+- Mock paths gotcha + full details: `.opencode/specs/24-testing.md`.

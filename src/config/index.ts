@@ -12,7 +12,7 @@ dotenv.config({
 // instead of surfacing as a confusing runtime error mid-request.
 const envSchema = z.object({
   PORT: z.string().default("4000"),
-  NODE_ENV: z.enum(["development", "production"]).default("development"),
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 
   // Frontend origins for CORS + payment redirects. The frontend may not be
   // deployed yet (or may be rebuilt), so both are optional: the backend must

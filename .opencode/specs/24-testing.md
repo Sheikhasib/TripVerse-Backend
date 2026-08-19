@@ -22,31 +22,50 @@ the real app, with a dedicated test database.
 
 - **Vitest** (native ESM + TS, zero config friction with this ESM/ES2023 setup) + **supertest** for
   HTTP-level integration. Dev dependencies: `vitest`, `supertest`, `@types/supertest`.
-- Test DB: a separate Postgres database (`DATABASE_URL_TEST`), migrated with
-  `npx prisma migrate deploy` (or `db push`) in the test setup, and truncated between suites.
+- **Test DB strategy (implemented, user-approved deviation from this spec):** there is no separate
+  Postgres database available (no local password; Prisma Postgres is a pooled proxy where
+  `CREATE DATABASE` is not allowed; `tripverse_test`/`tripverse` DBs don't exist). `DATABASE_URL_TEST`
+  points at the **same live Prisma Postgres DB** and the suite runs **without truncation**. Safety
+  comes from (a) every test uses unique UUID keys/emails, and (b) `tests/setup.ts` cleanup deletes
+  ONLY the rows each file created — children before parents (schema uses Prisma's default RESTRICT).
+  Do **not** run truncating tests against this DB. If a real disposable DB becomes available, flip
+  `DATABASE_URL_TEST` and re-enable truncation — the tests are keyed, so they stay safe either way.
 - Scripts (package.json):
   ```
   "test": "vitest run",
   "test:watch": "vitest"
   ```
-- `vitest.config.ts` — `test.environment = "node"`, `test.globals = true`, `test.setupFiles =
-  ["tests/setup.ts"]`, `test.fileParallelism = false` (see parallel-safety), `test.exclude` keeps
-  `node_modules`/`dist` out.
+- `vitest.config.ts` — `environment = "node"`, `globals = true`, `setupFiles = ["tests/setup.ts"]`,
+  `fileParallelism = false` (sequential — the shared DB), `pool = "forks"`, `isolate = true`,
+  `testTimeout/hookTimeout = 30_000`. **Do not override `test.exclude`** — vitest's default excludes
+  keep `node_modules`/`dist` out; a custom `exclude` list dropped that default and vitest scanned
+  node_modules for test files.
+- **vi.mock path gotcha (bit us):** mock specifiers must be written exactly as vitest can reconcile
+  against the app's own imports. From `tests/`, source modules are reached via `../src/...` (one level
+  up) — `vi.mock("../src/lib/sslcommerz")`. Using `vi.mock("../../src/lib/sslcommerz")` silently did
+  NOT mock the copy the app graph imports (real gateway/email/Redis calls ran and the tests failed);
+  `import` statements in the test files were already `../src/...`. Keep import and mock paths in the
+  same form.
+- Rate limiters are skipped when `NODE_ENV === "test"` (`src/app.ts`) so `authLimiter`
+  (5/15 min per IP) can't throttle the suites; morgan only logs in development. `NODE_ENV="test"`
+  was added to the config Zod enum.
 
 ## Test layout
 
 ```
 tests/
-  setup.ts            // boots env (DATABASE_URL_TEST, NODE_ENV=test), prisma truncation helper
-  factories.ts        // create user/package/booking/etc. helpers against the test DB
-  auth.test.ts        // register/login/demo-login/refresh/logout/me + RBAC
-  booking.test.ts     // create, ownership 403s, full state machine incl. PAID/CANCELLED
-  payment.test.ts     // create session, processGatewayResult (mock sslcommerz), refund
+  setup.ts            // boots env (DATABASE_URL_TEST → DATABASE_URL, NODE_ENV=test),
+                      // no-truncation cleanup registry + global afterAll cleanup
+  factories.ts        // create user/package/booking/etc. helpers against the shared DB
+                      // + loginAs (real login endpoint) + bearer + futureIso
+  auth.test.ts        // register/login/demo-login/refresh/logout/me + RBAC + email OTP (stub redis)
+  booking.test.ts     // create, ownership 403s, full state machine incl. PAID/CANCELLED + refund
+  payment.test.ts     // create session, verify-before-PAID, IPN idempotency (mock sslcommerz)
   review.test.ts      // create gate, duplicate 409, edit/delete recompute (Step 20)
   wishlist.test.ts    // add/list/delete + idempotency
   notification.test.ts// raise + read + unread-count + read-all
   blog.test.ts        // publish gating, own-only edits, comments (Step 19)
-  contact.test.ts     // public submit + admin manage
+  contact.test.ts     // public submit + admin manage (mock email senders)
   dashboard.test.ts   // stats aggregates
   email.test.ts       // best-effort emails never throw (mock Resend)
 ```
@@ -76,16 +95,25 @@ tests/
 
 ## Env & CI
 
-- `.env.example`: add `DATABASE_URL_TEST=postgres://.../tripverse_test`.
-- `tests/setup.ts` reads `DATABASE_URL_TEST` (Zod-validated in a test-only config override) and runs
-  `prisma migrate deploy` on it; each suite truncates `users, tour_packages, bookings, payments,
-  reviews, wishlist_items, notifications, blog_posts, blog_comments, contact_messages` before run.
-- CI (Step 25) provisions the test DB via a Postgres service container and runs `npm test`.
+- `.env.example` and local `.env` add `DATABASE_URL_TEST` (points at the shared live DB today —
+  see the strategy note above). `tests/setup.ts` boots env **before** the test file imports run:
+  `NODE_ENV=test`, explicit `dotenv.config({ quiet: true })`, then
+  `process.env.DATABASE_URL = process.env.DATABASE_URL_TEST` so config/prisma connect to the test
+  URL. `NODE_ENV="test"` is a valid value in the config Zod enum.
+- **Mocks per test file** (isolated vitest module graphs): `src/lib/sslcommerz` (booking/payment),
+  `src/utils/email` (booking/payment/contact), `src/lib/redis` + `src/utils/authEmail` +
+  `src/lib/googleAuth` (auth), the `resend` package (email.test). The in-app `notify` helper stays
+  real (rows are cleaned up with their users).
+- CI (Step 25) provisions a disposable Postgres (or keeps `DATABASE_URL_TEST` on the shared DB,
+  non-truncating) and runs `npm test`.
 
 ## Files to change
 
 - `package.json` — `test`/`test:watch` scripts + dev deps
 - `.env.example` — `DATABASE_URL_TEST`
+- `src/config/index.ts` — add `"test"` to the `NODE_ENV` enum
+- `src/app.ts` — rate limiters `skip` when `NODE_ENV === "test"`; morgan only in development
+- `tsconfig.json` — `types` include `vitest/globals`; include `tests/**/*` + `vitest.config.ts`
 - `.gitignore` — nothing (tests are committed; test artifacts aren't produced)
 
 ## Files to create
@@ -103,22 +131,23 @@ tests/
 
 - Tests assert **behaviour**, not implementation — freeze the response envelope, status codes, and
   state-machine transitions, not internal function calls (except where mocking boundaries demand it).
-- No real money/email/cloud in tests — every external provider is mocked; the DB is a real Postgres
+- No real money/email/cloud in tests — every external provider is mocked; the DB is the real Postgres
   (schema fidelity matters for the Prisma queries under test).
-- **Parallel-safety (hard requirement):** a single shared test DB means test **files cannot run in
-  parallel** — two suites truncating the same tables will stomp each other. `fileParallelism:
-  false` in `vitest.config.ts` runs one file at a time (cheap here: ~10 small suites). Within a
-  file, tests share state deliberately (sequential flow tests like "register → book → pay →
-  confirm") or use unique emails per test.
+- **Parallel-safety (hard requirement):** a shared DB means test **files cannot run in parallel** —
+  `fileParallelism: false` runs one file at a time. Within a file, tests share state deliberately
+  (sequential flow tests like "register → book → pay → confirm") or use unique emails/keys per test.
+- **Live-DB discipline:** never assert absolute list counts (the DB has real data — e.g. published
+  blog posts); assert by unique slug/key or by deltas. Never truncate; cleanup only what a file
+  created, children before parents.
 - Don't over-mock: `prisma` itself is real. Only the *external* services (SSLCommerz, Resend,
-  Cloudinary) are stubbed.
+  Redis in auth, Cloudinary) are stubbed.
 - Section-header comments only where existing modules use them.
 
 ## Definition of done
 
-- `npm test` runs green on a clean `DATABASE_URL_TEST` (migrate deploy → truncate → run).
+- `npm test` runs green (`npx vitest run`): **67 tests across 10 suites** against `DATABASE_URL_TEST`
+  (shared live DB, non-truncating, unique keys + scoped cleanup).
 - Coverage of the must-have assertions above, including the payment verify-before-PAID and
   review-recompute invariants.
-- Tests run in CI (Step 25) on every push/PR and block merge on failure.
 - `npx tsc --noEmit` passes (test files typecheck clean).
 - Commit + push (AGENTS.md workflow).
