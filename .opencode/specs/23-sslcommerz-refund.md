@@ -84,6 +84,13 @@ the refund *confirmation*, never the cancellation. Bound the call with a short t
 comfortably inside the Vercel function limit after the DB work) so a hung gateway can't hold the
 request. A queue / admin retry endpoint (`POST /api/payments/:id/retry-refund`) is deferred to the
 backlog; `refundInitiatedAt` exists so that later path can find refundable-but-unconfirmed payments.
+> **Backlog requirement (verified 2026-08-19):** the gateway tracks a remaining refundable balance
+> per transaction and accepted a second full refund-init while the first was still `processing`. The
+> retry endpoint MUST query the refund status (`refund_ref_id` → `refunded|processing|cancelled`)
+> before re-initiating — otherwise a retry during a still-processing refund would over-refund. It
+> should also add `sslcommerzRefundStatus()` to `src/lib/sslcommerz.ts`. Today's cancel flow is safe
+> (SUCCESS + `refundCompletedAt: null` selection, REFUNDED flip is CAS, booking CAS blocks
+> double-cancel), so this only constrains the future retry path.
 
 5. Refund failure/throw → **leave `status: SUCCESS`** (money hasn't left the gateway), set
    `refundInitiatedAt` for visibility, **do not fail the cancellation**. Because the booking already

@@ -207,9 +207,9 @@ export async function sslcommerzRefund(options: {
   }
 
   // Whitelist: only an explicit `success` counts as a confirmed refund. Any other
-// status (failed, processing, pending, or an unexpected value) throws — so the
-// payment row can never flip to REFUNDED before the gateway actually settles.
-if (data.APIConnect !== "DONE" || data.status !== "success") {
+  // status (failed, processing, pending, or an unexpected value) throws — so the
+  // payment row can never flip to REFUNDED before the gateway actually settles.
+  if (data.APIConnect !== "DONE" || data.status !== "success") {
     throw new AppError(
       502,
       `SSLCommerz refund rejected: ${data.errorReason ?? data.APIConnect ?? data.status ?? "unknown"}`,
