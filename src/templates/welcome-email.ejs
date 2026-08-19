@@ -39,7 +39,9 @@
           <li>Book trips and manage your itineraries in one place</li>
           <li>Share reviews and plan your next adventure</li>
         </ul>
-        <a class="cta" href="#">Start exploring</a>
+        <% if (frontendUrl && frontendUrl.length) { %>
+        <a class="cta" href="<%= frontendUrl %>">Start exploring</a>
+        <% } %>
         <p class="muted">Need a hand? Our support team is here to help you every step of the way.</p>
       </div>
       <div class="footer">
