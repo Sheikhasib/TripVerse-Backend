@@ -498,6 +498,21 @@ const demoLogin = async (payload: IDemoLoginPayload) => {
   return { ...(await issueTokens(demoUser)), user: demoUser };
 };
 
+// Reuse detected → kill the whole family: every outstanding token dies via
+// revoke + tokenVersion bump. Same shape as logout.
+const revokeFamily = async (userId: string) => {
+  await prisma.$transaction([
+    prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    }),
+    prisma.user.update({
+      where: { id: userId },
+      data: { tokenVersion: { increment: 1 } },
+    }),
+  ]);
+};
+
 // ── Refresh ─────────────────────────────────────────────────────────────
 const refreshToken = async (payload: IRefreshTokenPayload) => {
   const { refreshToken: providedRefreshToken } = payload;
@@ -548,18 +563,8 @@ const refreshToken = async (payload: IRefreshTokenPayload) => {
   }
 
   // A revoked row is the theft signature — someone replayed a rotated token.
-  // Kill the whole family: every outstanding token dies via revoke + bump.
   if (row.revokedAt) {
-    await prisma.$transaction([
-      prisma.refreshToken.updateMany({
-        where: { userId: user.id, revokedAt: null },
-        data: { revokedAt: new Date() },
-      }),
-      prisma.user.update({
-        where: { id: user.id },
-        data: { tokenVersion: { increment: 1 } },
-      }),
-    ]);
+    await revokeFamily(user.id);
     throw new AppError(401, "Refresh token reuse detected. Please login again.");
   }
 
@@ -568,28 +573,37 @@ const refreshToken = async (payload: IRefreshTokenPayload) => {
     throw new AppError(401, "Refresh token has expired. Please login again.");
   }
 
-  // Valid → rotate: revoke the old row and mint+persist the new pair
-  // atomically so the client can never end up half-rotated.
-  return prisma.$transaction(async (tx) => {
-    await tx.refreshToken.update({
-      where: { id: row.id },
+  // Valid → rotate. The CAS on `revokedAt: null` makes rotation a
+  // compare-and-swap: of two truly-concurrent presents of the same token only
+  // one wins; the loser's updateMany returns count 0 → family nuke. The nuke
+  // must run AFTER the transaction commits — throwing inside the interactive
+  // tx would roll it back and silently undo the nuke.
+  const outcome = await prisma.$transaction(async (tx) => {
+    const rotated = await tx.refreshToken.updateMany({
+      where: { id: row.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
-    return issueTokens(user, tx);
+
+    if (rotated.count === 0) {
+      return "LOST" as const;
+    }
+
+    const tokens = await issueTokens(user, tx);
+    return { tokens } as const;
   });
+
+  if (outcome === "LOST") {
+    await revokeFamily(user.id);
+    throw new AppError(401, "Refresh token reuse detected. Please login again.");
+  }
+
+  return outcome.tokens;
 };
 
 // ── Logout ──────────────────────────────────────────────────────────────
 const logout = async (userId: string) => {
-  // Revoke the ledger rows first, then bump tokenVersion (kills everything).
-  await prisma.refreshToken.updateMany({
-    where: { userId, revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
-  await prisma.user.update({
-    where: { id: userId },
-    data: { tokenVersion: { increment: 1 } },
-  });
+  // Revoke the ledger rows, then bump tokenVersion (kills everything).
+  await revokeFamily(userId);
 };
 
 // ── Get me ──────────────────────────────────────────────────────────────

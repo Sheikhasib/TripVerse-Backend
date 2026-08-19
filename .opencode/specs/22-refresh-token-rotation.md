@@ -52,6 +52,12 @@ After signing the access + refresh JWTs (unchanged), also persist:
 `create({ userId, hash: sha256(refreshToken), expiresAt: now + refresh-expiry })`. The refresh JWT
 itself stays in the response payload exactly as today — the DB row is just a rotation ledger.
 
+**jti is mandatory.** `jwt.sign(payload, secret)` (second-resolution `iat`, no `jti`) mints
+**byte-identical** tokens for the same user within the same second — the rotated token would equal
+the one being revoked and its `sha256` would collide on the ledger's `@unique` hash (→ P2002 → 409).
+Every signed token must carry `jti: crypto.randomUUID()` (add in `jwtUtils.createToken` so it applies
+to access + refresh alike). Verify: two tokens minted in the same second decode to different `jti`.
+
 ### Refresh (`refreshToken` — rewritten)
 
 1. Verify the JWT signature + `tokenVersion` as today (a bad signature still → 401; a bumped
@@ -62,9 +68,11 @@ itself stays in the response payload exactly as today — the DB row is just a r
      Revoke the whole family — `updateMany({ where: { userId }, data: { revokedAt: now } })` **and**
      `user.update({ data: { tokenVersion: { increment: 1 } } })` so every outstanding token (incl.
      the stolen one) dies. Throw 401.
-   - **Found, not revoked, not expired** → rotate: in one transaction, `update({ where: { id },
-     data: { revokedAt: now } })` and issue the new pair, persisting the new refresh row. Return the
-     new tokens.
+   - **Found, not revoked, not expired** → rotate via **compare-and-swap**, not a blind update:
+     `updateMany({ where: { id, revokedAt: null }, data: { revokedAt: now } })`. If `count === 0` the
+     token was just rotated by a concurrent request → treat as reuse and nuke the family (same as the
+     `revokedAt` branch). Only the winner issues the new pair. This keeps the backend strict under
+     true concurrency, not just sequential replay.
 3. A rotated token presented **again** (the honest client's old token arriving late, or a thief)
    hits the `revokedAt` branch and kills the family — the intended trade-off of rotation. The
    frontend must always persist the **newest** refresh token it receives.
@@ -119,8 +127,11 @@ None (`node:crypto` `createHash` for SHA-256).
 - `npx prisma migrate dev --name add_refresh_token_rotation` applies; `npx tsc --noEmit` passes.
 - Login → a refresh row exists (hash present, `revokedAt: null`). `POST /api/auth/refresh` →
   new tokens **and** the old row's `revokedAt` set, a new row inserted.
+- **Same-second mint** (login → refresh back-to-back) → 200, distinct tokens/hashes — never a 409.
 - Presenting the **old** (now revoked) refresh token → family revoked: `tokenVersion` incremented,
   the previously-issued refresh token now 401s too.
+- Two concurrent presents of the same still-valid token → one 200, the other 401 with a family
+  nuke (CAS: only one rotation wins).
 - Logout → all rows for the user revoked + tokenVersion bumped (existing behaviour preserved).
 - `npm run dev` boots; the normal login→refresh→use flow works unchanged for the frontend.
 - Commit + push (AGENTS.md workflow).

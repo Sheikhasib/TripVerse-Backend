@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import jwt, { JwtPayload, SignOptions } from "jsonwebtoken";
 
 const createToken = (
@@ -5,7 +6,10 @@ const createToken = (
   secret: string,
   expiresIn: SignOptions,
 ) => {
-  const token = jwt.sign(payload, secret, expiresIn);
+  // jti guarantees byte-unique tokens even within the same iat second —
+  // otherwise two tokens minted for the same user in one second collide on
+  // the refresh-ledger unique hash (Step 22).
+  const token = jwt.sign({ ...payload, jti: crypto.randomUUID() }, secret, expiresIn);
 
   return token;
 };
