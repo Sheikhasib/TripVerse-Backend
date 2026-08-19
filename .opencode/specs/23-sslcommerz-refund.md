@@ -44,8 +44,10 @@ endpoint (sandbox `https://sandbox.sslcommerz.com/validator/api/merchantTransIDv
 `bank_tran_id, refund_trans_id, store_id, store_passwd, refund_amount, refund_remarks, refe_id,
 format=json, v=1`. `refund_trans_id` is **mandatory** (added by SSLCommerz 24/02/2025) — the lib
 auto-generates a fresh unique one per attempt (`generateRefundTranId`, ≤30 chars). Response
-`{ APIConnect, status, errorReason?, refund_ref_id?, bank_tran_id? }`; `APIConnect !== "DONE"` or
-`status === "failed"` → throw (clean 502 path in the service). Bounded with `AbortSignal.timeout(8000)`.
+`{ APIConnect, status, errorReason?, refund_ref_id?, bank_tran_id? }`. **Whitelist:** only
+`APIConnect === "DONE" && status === "success"` counts as a confirmed refund; every other status
+(failed/processing/pending/unexpected) → throw (clean 502 path in the service), so `REFUNDED` can
+never be written before the gateway settles. Bounded with `AbortSignal.timeout(8000)`.
 Never logs the store password.
 
 > **Verified 2026-08-19 (sandbox):** the older `POST https://…/refund/api/v3/refund.php` endpoint from

@@ -168,8 +168,9 @@ export async function sslcommerzValidate(options: {
 // Initiates a refund against a settled transaction (Refund API, v4 docs). The
 // transaction is resolved by `bank_tran_id` (captured from the gateway at
 // payment time). `refund_trans_id` is a mandatory, unique-per-attempt id.
-// status: success (initiated) | failed | processing (already initiated).
-// Bounded to 8s so a hung gateway can't hold the cancelling request.
+// Only `status: "success"` (APIConnect DONE) is treated as a confirmed refund;
+// anything else (failed/processing/pending) throws. Bounded to 8s so a hung
+// gateway can't hold the cancelling request.
 export async function sslcommerzRefund(options: {
   bank_tran_id: string;
   refund_trans_id?: string;
@@ -205,7 +206,10 @@ export async function sslcommerzRefund(options: {
     throw new AppError(502, "SSLCommerz refund returned a non-JSON response");
   }
 
-  if (data.APIConnect !== "DONE" || data.status === "failed") {
+  // Whitelist: only an explicit `success` counts as a confirmed refund. Any other
+// status (failed, processing, pending, or an unexpected value) throws — so the
+// payment row can never flip to REFUNDED before the gateway actually settles.
+if (data.APIConnect !== "DONE" || data.status !== "success") {
     throw new AppError(
       502,
       `SSLCommerz refund rejected: ${data.errorReason ?? data.APIConnect ?? data.status ?? "unknown"}`,
