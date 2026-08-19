@@ -23,6 +23,7 @@ model User {
   wishlist      WishlistItem[]
   notifications Notification[]
   comments      BlogComment[] @relation("UserComments")
+  refreshTokens RefreshToken[]
 
   @@index([role])
   @@index([status])

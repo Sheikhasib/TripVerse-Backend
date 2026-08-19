@@ -1,0 +1,13 @@
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  hash      String   @unique // SHA-256 of the refresh JWT — never store the JWT itself
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime? // set when rotated or logged out
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, revokedAt])
+  @@map("refresh_tokens")
+}

@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { JwtPayload, SignOptions } from "jsonwebtoken";
+import { decode, JwtPayload, SignOptions } from "jsonwebtoken";
 import config from "../../config";
 import { prisma } from "../../lib/prisma";
 import { googleClient } from "../../lib/googleAuth";
@@ -13,6 +13,7 @@ import {
   sendVerificationOtpEmail,
   sendWelcomeEmail,
 } from "../../utils/authEmail";
+import { Prisma } from "../../../generated/prisma/client";
 import { Role } from "../../../generated/prisma/enums";
 import {
   IAuth,
@@ -27,6 +28,18 @@ import {
 } from "./auth.interface";
 
 const OTP_EXPIRATION_SECONDS = 5 * 60; // 5 minutes — matches the reference backend
+
+// SHA-256 of a refresh JWT — the rotation ledger stores only this hash, never
+// the token itself, so a DB leak can't mint usable refresh tokens.
+const sha256 = (value: string) =>
+  crypto.createHash("sha256").update(value).digest("hex");
+
+// Refresh-token expiry read from the signed token's `exp` so the ledger row
+// always matches JWT_REFRESH_EXPIRES_IN exactly.
+const refreshTokenExpiresAt = (token: string) => {
+  const payload = decode(token) as JwtPayload | null;
+  return payload?.exp ? new Date(payload.exp * 1000) : new Date();
+};
 
 // Redis OTP store accessor — 503 when unconfigured (never a boot-time crash).
 const getRedisClient = async () => {
@@ -51,13 +64,16 @@ const buildTokenPayload = (user: {
   tokenVersion: user.tokenVersion,
 });
 
-const issueTokens = (user: {
-  id: string;
-  name: string;
-  email: string;
-  role: Role;
-  tokenVersion: number;
-}) => {
+const issueTokens = async (
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    role: Role;
+    tokenVersion: number;
+  },
+  client: Prisma.TransactionClient | typeof prisma = prisma,
+) => {
   const tokenPayload = buildTokenPayload(user);
 
   const accessToken = jwtUtils.createToken(
@@ -70,6 +86,16 @@ const issueTokens = (user: {
     config.jwt_refresh_secret,
     { expiresIn: config.jwt_refresh_expires_in } as SignOptions,
   );
+
+  // Rotation ledger — persist a row keyed by the refresh token's hash. The
+  // JWT itself stays in the response exactly as before.
+  await client.refreshToken.create({
+    data: {
+      userId: user.id,
+      hash: sha256(refreshToken),
+      expiresAt: refreshTokenExpiresAt(refreshToken),
+    },
+  });
 
   return { accessToken, refreshToken };
 };
@@ -211,7 +237,7 @@ const verifyEmail = async (payload: IVerifyEmailPayload) => {
     sendWelcomeEmail({ email: createdUser.email, name: createdUser.name }),
   ]);
 
-  const tokens = issueTokens(createdUser);
+  const tokens = await issueTokens(createdUser);
 
   return { ...tokens, user: createdUser };
 };
@@ -369,7 +395,7 @@ const loginUser = async (payload: ILoginUser) => {
     throw new AppError(401, "Invalid email or password");
   }
 
-  return issueTokens(user);
+  return await issueTokens(user);
 };
 
 // ── Google login (ID-token flow) ────────────────────────────────────────
@@ -441,7 +467,7 @@ const googleLogin = async (payload: IGoogleLoginPayload) => {
     });
   }
 
-  const tokens = issueTokens(user!);
+  const tokens = await issueTokens(user!);
   const sanitizedUser = sanitizeUser(user!);
 
   return { ...tokens, user: sanitizedUser };
@@ -469,7 +495,7 @@ const demoLogin = async (payload: IDemoLoginPayload) => {
     omit: { password: true },
   });
 
-  return { ...issueTokens(demoUser), user: demoUser };
+  return { ...(await issueTokens(demoUser)), user: demoUser };
 };
 
 // ── Refresh ─────────────────────────────────────────────────────────────
@@ -502,11 +528,64 @@ const refreshToken = async (payload: IRefreshTokenPayload) => {
     throw new AppError(401, "Token is no longer valid. Please login again.");
   }
 
-  return issueTokens(user);
+  // Opportunistic housekeeping — keep the ledger from growing unbounded
+  // without a cron: drop expired rows and rows revoked more than 7 days ago.
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  await prisma.refreshToken.deleteMany({
+    where: {
+      OR: [{ expiresAt: { lt: new Date() } }, { revokedAt: { lte: weekAgo } }],
+    },
+  });
+
+  // Rotation ledger lookup by the presented token's hash.
+  const row = await prisma.refreshToken.findUnique({
+    where: { hash: sha256(providedRefreshToken) },
+  });
+
+  // Never issued (or already pruned) → reject.
+  if (!row) {
+    throw new AppError(401, "Invalid refresh token. Please login again.");
+  }
+
+  // A revoked row is the theft signature — someone replayed a rotated token.
+  // Kill the whole family: every outstanding token dies via revoke + bump.
+  if (row.revokedAt) {
+    await prisma.$transaction([
+      prisma.refreshToken.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+      prisma.user.update({
+        where: { id: user.id },
+        data: { tokenVersion: { increment: 1 } },
+      }),
+    ]);
+    throw new AppError(401, "Refresh token reuse detected. Please login again.");
+  }
+
+  // Naturally expired → reject without touching the family.
+  if (row.expiresAt.getTime() <= Date.now()) {
+    throw new AppError(401, "Refresh token has expired. Please login again.");
+  }
+
+  // Valid → rotate: revoke the old row and mint+persist the new pair
+  // atomically so the client can never end up half-rotated.
+  return prisma.$transaction(async (tx) => {
+    await tx.refreshToken.update({
+      where: { id: row.id },
+      data: { revokedAt: new Date() },
+    });
+    return issueTokens(user, tx);
+  });
 };
 
 // ── Logout ──────────────────────────────────────────────────────────────
 const logout = async (userId: string) => {
+  // Revoke the ledger rows first, then bump tokenVersion (kills everything).
+  await prisma.refreshToken.updateMany({
+    where: { userId, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
   await prisma.user.update({
     where: { id: userId },
     data: { tokenVersion: { increment: 1 } },
