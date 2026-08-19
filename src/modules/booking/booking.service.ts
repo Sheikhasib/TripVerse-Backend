@@ -9,6 +9,7 @@ import {
   IBookingQuery,
   IBookingSearchQuery,
   ICreateBooking,
+  IRefundOutcome,
   IUpdateBookingStatus,
 } from "./booking.interface";
 
@@ -115,7 +116,8 @@ const bookingPaymentSelect = {
     valId: true,
     paidAt: true,
     refundRefId: true,
-    refundedAt: true,
+    refundInitiatedAt: true,
+    refundCompletedAt: true,
   },
 } as const;
 
@@ -354,7 +356,9 @@ const getBookingDetail = async (id: string, actor: BookingActor) => {
 // ── Refund (booking cancelled with settled money) ───────────────────────────
 // Runs AFTER the status-transition transaction commits, so a gateway failure can
 // never roll back the cancellation itself. Each settled payment is refunded via
-// the SSLCommerz Refund API and its ledger row stores the gateway reference.
+// the SSLCommerz Refund API; the ledger flips to REFUNDED ONLY after the gateway
+// confirms — a failed refund leaves the payment SUCCESS with refundInitiatedAt
+// set so a later retry/manual action can find it (spec 23).
 type RefundContext = {
   email: string;
   name: string;
@@ -365,62 +369,78 @@ type RefundContext = {
 const issueRefunds = async (
   bookingId: string,
   ctx: RefundContext,
-): Promise<void> => {
-  try {
-    const payments = await prisma.payment.findMany({
-      where: { bookingId, status: PaymentStatus.REFUNDED },
-    });
-    if (payments.length === 0) return;
+): Promise<IRefundOutcome | null> => {
+  const payments = await prisma.payment.findMany({
+    where: { bookingId, status: PaymentStatus.SUCCESS, refundCompletedAt: null },
+  });
+  if (payments.length === 0) return null;
 
-    const refundRefs: string[] = [];
-    const outcomes = await Promise.allSettled(
-      payments.map(async (payment) => {
-        if (!payment.bankTranId) {
-          console.error(
-            `[refund] payment ${payment.id} has no bank_tran_id; gateway refund skipped.`,
-          );
-          return;
-        }
-        const gateway = await sslcommerzRefund({
-          bank_tran_id: payment.bankTranId,
-          refund_amount: Number(payment.amount),
-          refund_remarks: `Booking ${bookingId} cancelled - TripVerse`,
-          refe_id: bookingId,
-        });
-        if (gateway.status === "success" && gateway.refund_ref_id) {
-          await prisma.payment.update({
-            where: { id: payment.id },
-            data: { refundRefId: gateway.refund_ref_id, refundedAt: new Date() },
-          });
-          refundRefs.push(gateway.refund_ref_id);
-        } else {
-          console.error(
-            `[refund] payment ${payment.id} rejected: ${gateway.errorReason ?? gateway.status ?? "unknown"}`,
-          );
-        }
-      }),
-    );
-    // individual failures are logged above and swallowed — money status already
-    // flipped to REFUNDED, so the customer sees a refund regardless.
-    void outcomes;
+  let allSucceeded = true;
+  let firstFailure: string | null = null;
+  let refundedTotal = 0;
+  const refundRefs: string[] = [];
 
-    if (refundRefs.length > 0) {
-      void Promise.allSettled([
-        sendRefundEmail({
-          email: ctx.email,
-          name: ctx.name,
-          packageTitle: ctx.packageTitle,
-          travelDate: ctx.travelDate,
-          amount: payments.reduce((sum, p) => sum + Number(p.amount), 0),
-          refundRefId: refundRefs[0],
-        }),
-      ]);
+  for (const payment of payments) {
+    if (!payment.bankTranId) {
+      allSucceeded = false;
+      firstFailure ??= "Payment has no bank transaction id to refund against.";
+      await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: { refundInitiatedAt: new Date() },
+      });
+      continue;
     }
-  } catch (error) {
-    console.error(
-      `[refund] unexpected error: ${error instanceof Error ? error.message : String(error)}`,
-    );
+
+    try {
+      const gateway = await sslcommerzRefund({
+        bank_tran_id: payment.bankTranId,
+        refund_amount: Number(payment.amount),
+        refund_remarks: `Booking ${bookingId} cancelled - TripVerse`,
+        refe_id: bookingId,
+      });
+
+      // CAS: only a still-SUCCESS payment flips to REFUNDED — a concurrent
+      // refund loses the race (count 0) and is a no-op. Never double-refunds.
+      const flipped = await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: {
+          status: PaymentStatus.REFUNDED,
+          refundRefId: gateway.refund_ref_id ?? payment.refundRefId ?? null,
+          refundCompletedAt: new Date(),
+        },
+      });
+
+      if (flipped.count === 0) continue; // already refunded by a concurrent path
+      refundedTotal += Number(payment.amount);
+      if (gateway.refund_ref_id) refundRefs.push(gateway.refund_ref_id);
+    } catch (error) {
+      allSucceeded = false;
+      firstFailure ??=
+        error instanceof Error ? error.message : String(error);
+      // money hasn't left the gateway — leave status SUCCESS, mark for retry
+      await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: { refundInitiatedAt: new Date() },
+      });
+    }
   }
+
+  if (refundRefs.length > 0) {
+    void Promise.allSettled([
+      sendRefundEmail({
+        email: ctx.email,
+        name: ctx.name,
+        packageTitle: ctx.packageTitle,
+        travelDate: ctx.travelDate,
+        amount: refundedTotal,
+        refundRefId: refundRefs[0],
+      }),
+    ]);
+  }
+
+  return allSucceeded
+    ? { status: "SUCCESS" }
+    : { status: "FAILED", message: firstFailure ?? "Refund could not be processed." };
 };
 
 // ── Status transition ───────────────────────────────────────────────────────
@@ -489,14 +509,11 @@ const updateBookingStatus = async (
       );
     }
 
-    // Cancelling a paid booking marks its money as returned (REFUNDED flag).
-    // Abandoned sessions are cancelled. The gateway refunds + refund email run
-    // after this transaction commits (issueRefunds is best-effort).
+    // Cancelling a booking abandons any non-settled sessions (no money was
+    // taken). Settled (SUCCESS) payments are NOT touched here — the gateway
+    // refund + REFUNDED flip happen after this transaction commits, so a gateway
+    // failure can never roll back the cancellation itself (spec 23).
     if (to === BookingStatus.CANCELLED) {
-      await tx.payment.updateMany({
-        where: { bookingId: id, status: PaymentStatus.SUCCESS },
-        data: { status: PaymentStatus.REFUNDED },
-      });
       await tx.payment.updateMany({
         where: { bookingId: id, status: PaymentStatus.INITIATED },
         data: { status: PaymentStatus.CANCELLED },
@@ -510,9 +527,12 @@ const updateBookingStatus = async (
     throw new AppError(404, "Booking not found.");
   }
 
-  // best-effort gateway refund + refund email for settled money (never throws)
+  // synchronous gateway refund for settled money (booking already CANCELLED).
+  // The outcome is surfaced to the actor; a gateway hiccup never fails the
+  // cancellation itself.
+  let refund: IRefundOutcome | null = null;
   if (to === BookingStatus.CANCELLED) {
-    await issueRefunds(id, {
+    refund = await issueRefunds(id, {
       email: booking.user.email,
       name: booking.user.name,
       packageTitle: booking.package.title,
@@ -577,7 +597,11 @@ const updateBookingStatus = async (
     );
   }
 
-  return { ...updated, totalPrice: Number(updated.totalPrice) };
+  return {
+    ...updated,
+    totalPrice: Number(updated.totalPrice),
+    ...(refund ? { refund } : {}),
+  };
 };
 
 export const bookingService = {

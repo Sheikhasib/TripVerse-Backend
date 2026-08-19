@@ -59,6 +59,13 @@ export function generateTranId(): string {
   return `TRNX_ID-${Date.now()}-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
 }
 
+// Unique refund transaction id (mandatory by the refund API since 24/02/2025,
+// max 30 chars) — a fresh one per refund attempt so the gateway never rejects a
+// duplicate.
+export function generateRefundTranId(): string {
+  return `RFD-${Date.now()}-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+}
+
 // Initiates a gateway session. Server-to-server POST, form-encoded. The gateway
 // responds with the hosted checkout URL (GatewayPageURL) the customer is sent to.
 export async function sslcommerzInit(options: {
@@ -158,11 +165,14 @@ export async function sslcommerzValidate(options: {
   return data;
 }
 
-// Initiates a refund against a settled transaction. bank_tran_id is the
-// original transaction's bank transaction ID captured at payment time.
+// Initiates a refund against a settled transaction (Refund API, v4 docs). The
+// transaction is resolved by `bank_tran_id` (captured from the gateway at
+// payment time). `refund_trans_id` is a mandatory, unique-per-attempt id.
 // status: success (initiated) | failed | processing (already initiated).
+// Bounded to 8s so a hung gateway can't hold the cancelling request.
 export async function sslcommerzRefund(options: {
   bank_tran_id: string;
+  refund_trans_id?: string;
   refund_amount: number;
   refund_remarks: string;
   refe_id?: string;
@@ -170,6 +180,7 @@ export async function sslcommerzRefund(options: {
   const { storeId, storePassword } = requireConfig();
   const params = new URLSearchParams({
     bank_tran_id: options.bank_tran_id,
+    refund_trans_id: options.refund_trans_id ?? generateRefundTranId(),
     store_id: storeId,
     store_passwd: storePassword,
     refund_amount: options.refund_amount.toFixed(2),
@@ -179,9 +190,10 @@ export async function sslcommerzRefund(options: {
   });
   if (options.refe_id) params.set("refe_id", options.refe_id);
 
-  const res = await fetch(`${config.sslcommerz_refund_url}?${params.toString()}`, {
-    method: "GET",
-  });
+  const res = await fetch(
+    `${config.sslcommerz_refund_url}?${params.toString()}`,
+    { method: "GET", signal: AbortSignal.timeout(8000) },
+  );
 
   const text = await res.text();
   if (!res.ok) throw new AppError(502, `SSLCommerz refund failed (${res.status})`);
@@ -191,6 +203,13 @@ export async function sslcommerzRefund(options: {
     data = JSON.parse(text) as SslcommerzRefundResult;
   } catch {
     throw new AppError(502, "SSLCommerz refund returned a non-JSON response");
+  }
+
+  if (data.APIConnect !== "DONE" || data.status === "failed") {
+    throw new AppError(
+      502,
+      `SSLCommerz refund rejected: ${data.errorReason ?? data.APIConnect ?? data.status ?? "unknown"}`,
+    );
   }
   return data;
 }

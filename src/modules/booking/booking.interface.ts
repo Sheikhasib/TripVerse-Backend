@@ -19,3 +19,8 @@ export interface IBookingSearchQuery extends IBookingQuery {
 export interface IUpdateBookingStatus {
   status: BookingStatus;
 }
+
+// Outcome of the synchronous refund attempt carried in the cancel response.
+export type IRefundOutcome =
+  | { status: "SUCCESS" }
+  | { status: "FAILED"; message: string };

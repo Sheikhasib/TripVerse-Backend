@@ -37,39 +37,43 @@ Apply with `npx prisma migrate dev --name add_payment_refund_columns`.
 
 ## SSLCommerz refund client — `src/lib/sslcommerz.ts`
 
-`sslcommerzRefund({ refund_ref_id, amount, tran_id, remarks })` — `POST` to the refund endpoint
-(sandbox `https://sandbox.sslcommerz.com/refund/api/v3/refund.php`, live
-`https://securepay.sslcommerz.com/refund/api/v3/refund.php`; derived from `SSL_COMMERZ_SANDBOX` like
-the init/validate URLs), form-encoded with `store_id, store_passwd, refund_ref_id, amount, tran_id,
-reference_easy, refund_remarks, format=json`. Returns `{ status: "success"|"failed", error?,
-refund_ref_id, bank_tran_id }`; non-success → throw (clean 502 path in the service). `refund_ref_id`
-comes from the original payment's stored value (captured below). Never logs the store password.
+`sslcommerzRefund({ bank_tran_id, refund_amount, refund_remarks, refe_id })` — **GET** to the refund
+endpoint (sandbox `https://sandbox.sslcommerz.com/validator/api/merchantTransIDvalidationAPI.php`, live
+`https://securepay.sslcommerz.com/validator/api/merchantTransIDvalidationAPI.php`; derived from
+`SSL_COMMERZ_SANDBOX` like the init/validate URLs) with query params
+`bank_tran_id, refund_trans_id, store_id, store_passwd, refund_amount, refund_remarks, refe_id,
+format=json, v=1`. `refund_trans_id` is **mandatory** (added by SSLCommerz 24/02/2025) — the lib
+auto-generates a fresh unique one per attempt (`generateRefundTranId`, ≤30 chars). Response
+`{ APIConnect, status, errorReason?, refund_ref_id?, bank_tran_id? }`; `APIConnect !== "DONE"` or
+`status === "failed"` → throw (clean 502 path in the service). Bounded with `AbortSignal.timeout(8000)`.
+Never logs the store password.
 
-## Capturing `refund_ref_id`
+> **Verified 2026-08-19 (sandbox):** the older `POST https://…/refund/api/v3/refund.php` endpoint from
+> the v3 docs **does not exist** (404). The current v4 docs confirm refund initiation lives on the
+> validator endpoint above. With the real sandbox store creds the endpoint answers `APIConnect: "DONE"`
+> (auth OK) and only fails a refund for an unknown `bank_tran_id` — proving endpoint + credentials +
+> params are wired correctly.
 
-SSLCommerz returns a `refund_ref_id` per transaction at **init/validation** time. Extend:
+## Capturing the refund identifier
 
-- `payment.service.ts` `createPaymentSession` — store `refund_ref_id` (and `val_id`) from the init /
-  validation response onto the payment row when available.
-- `payment.service.ts` `processGatewayResult` SUCCESS branch — persist `valId`, `cardType`,
-  `bankTranId`, `paidAt` **and** any `refund_ref_id` from the validation payload.
-
-So a `SUCCESS` payment that later gets cancelled already knows its refund reference. If it's null
-(refund not yet supported by the captured payload), fall back to `val_id` + `tran_id` — SSLCommerz
-can resolve a refund from the transaction; document the fallback in code. **Sandbox verification
-required during implementation**: confirm the sandbox init/validation payload actually returns
-`refund_ref_id`; if it doesn't, prove the `val_id` fallback works end-to-end before relying on it.
+The refund is resolved by `bank_tran_id` — the gateway's bank-side transaction id, captured at
+settlement (`processGatewayResult` SUCCESS branch already persists `bankTranId`). `refund_ref_id` is
+**not** returned by init/validation; the gateway generates it only when a refund is initiated, so the
+payment row stores it at that point (`refundRefId`, output of `sslcommerzRefund`). A `SUCCESS` payment
+without a `bank_tran_id` cannot be refunded via the gateway — the flow marks it `refundInitiatedAt`
+and reports `refund.status: FAILED` ("no bank transaction id").
 
 ## Refund flow — `booking.service.ts` `updateBookingStatus`
 
 The `to === CANCELLED` branch changes from "flag REFUNDED unconditionally" to:
 
-1. Find the `SUCCESS` payment for the booking (`where: { bookingId, status: SUCCESS }`).
-2. If none → no money to return; proceed as today.
-3. If one exists **and** `refundCompletedAt` is null → call `sslcommerzRefund(...)` **after** the
-   booking row flips to `CANCELLED` (order: flip booking first so the booking is consistent even if
-   the gateway call hangs/throws; then refund).
-4. Refund success → update the payment: `status: REFUNDED, refundCompletedAt: now`. Best-effort
+1. Find the `SUCCESS` payments for the booking (`where: { bookingId, status: SUCCESS, refundCompletedAt: null }`).
+2. If none → no money to return; proceed as today (no `refund` key in the response).
+3. For each, after the booking row has flipped to `CANCELLED` (order: flip booking first so the
+   booking is consistent even if the gateway call hangs/throws), call
+   `sslcommerzRefund({ bank_tran_id, refund_amount, refund_remarks, refe_id })`. A payment with no
+   `bank_tran_id` is treated as a failed refund.
+4. Refund success → CAS the payment `status: REFUNDED, refundRefId, refundCompletedAt: now`. Best-effort
    refund email.
 **Sync-vs-async decision:** the refund API call runs **synchronously inside the cancel request**,
 because (a) a cancel is rare and user-initiated and the actor wants the refund outcome immediately,
@@ -88,9 +92,10 @@ backlog; `refundInitiatedAt` exists so that later path can find refundable-but-u
 
 **Idempotency guard:** never refund twice. The compare-and-set on the booking status
 (`updateMany where { id, status: booking.status }`, count 0 → 409) already prevents double-cancel.
-Inside the refund, gate the gateway call on `payment.refundCompletedAt === null` and flip to
-`REFUNDED` via `updateMany({ where: { id, status: SUCCESS }, data: { ... } })` — a concurrent refund
-loses the race and is a no-op. A payment already `REFUNDED` is never re-charged or re-refunded.
+Inside the refund, the payments query is gated on `status: SUCCESS, refundCompletedAt: null` and the
+`REFUNDED` flip is a CAS (`updateMany where { id, status: SUCCESS }`) — a concurrent refund loses the
+race and is a no-op. A payment already `REFUNDED` is never selected, so never re-refunded. A repeated
+cancel of an already-`CANCELLED` booking is rejected by the state machine (400 "Cannot transition").
 
 ## Booking status machine note
 
@@ -101,8 +106,8 @@ happens** on that transition. `PENDING → CANCELLED` (no payment) and `CONFIRME
 ## Files to change
 
 - `prisma/schema/payment.prisma`
-- `src/lib/sslcommerz.ts` — `sslcommerzRefund`
-- `src/modules/payment/payment.service.ts` — capture `refund_ref_id`/`val_id`
+- `src/lib/sslcommerz.ts` — `sslcommerzRefund` + `generateRefundTranId`
+- `src/modules/payment/payment.service.ts` — `bankTranId` already captured at settlement (refund identifier)
 - `src/modules/booking/booking.service.ts` — CANCELLED branch calls the refund, guarded + idempotent
 - `src/utils/email.ts` — optional `sendRefundEmail`
 - `src/modules/booking/booking.controller.ts` / `booking.interface.ts` — surface refund status
@@ -126,9 +131,11 @@ None (native `fetch`; reuses the existing wrapper).
 ## Definition of done
 
 - `npx prisma migrate dev --name add_payment_refund_columns` applies; `npx tsc --noEmit` passes.
-- With a sandbox store + a `SUCCESS` payment: cancelling the `PAID` booking → booking `CANCELLED`,
+- With a sandbox store + a real `SUCCESS` payment: cancelling the `PAID` booking → booking `CANCELLED`,
   gateway refund succeeds, payment `REFUNDED` with `refundCompletedAt` set, refund email attempted.
-- Repeat cancel is a no-op (already `CANCELLED` → 409 from the state machine); a payment already
+  (Verified up to the gateway: endpoint + store auth answer `APIConnect: "DONE"`; a full settlement
+  refund requires a genuine sandbox transaction to exist for `bank_tran_id`.)
+- Repeat cancel is a no-op (already `CANCELLED` → 400 from the state machine); a payment already
   `REFUNDED` is never refunded again.
 - Refund API failure (bad creds / network): booking still `CANCELLED`, payment stays `SUCCESS` with
   `refundInitiatedAt`, response reports `refund.status: "FAILED"`, request does not 500.
