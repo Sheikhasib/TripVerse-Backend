@@ -23,12 +23,13 @@ jobs:
       - name: Run node esbuild.vercel.mjs
         run: |
           set +e
-          output=$(node esbuild.vercel.mjs 2>&1)
+          node esbuild.vercel.mjs > /tmp/esbuild.out 2>&1
           code=$?
-          {
-            echo "exit code: $code"
-            echo '```'
-            echo "$output"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "exit code: $code" | tee -a /tmp/esbuild.out
           exit $code
+      - name: Upload esbuild output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: esbuild-log
+          path: /tmp/esbuild.out
