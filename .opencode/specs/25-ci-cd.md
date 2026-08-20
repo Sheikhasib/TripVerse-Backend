@@ -75,7 +75,7 @@ Notes:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
-- run: npm ci
+      - run: npm ci
       - run: npx prisma generate
       - run: node esbuild.vercel.mjs
       - name: Fail if bundle is stale
