@@ -9,7 +9,6 @@ await build({
   target: "node20",
   packages: "external",
   legalComments: "none",
-  sourcemap: "inline",
   outfile: "api/index.js",
 });
 

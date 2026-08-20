@@ -87,6 +87,9 @@ Purpose: `api/index.js` is committed and must match `src/` (AGENTS.md — a stal
 `npm run build:vercel`; the job fails and asks for a rebuild. This is the CI twin of the husky hook.
 `npx prisma generate` runs first because `generated/` is gitignored — the fresh checkout has no
 generated client, and the bundle can't resolve `generated/prisma/*` imports without it.
+`esbuild.vercel.mjs` builds without an inline sourcemap so the bundle is byte-deterministic across
+machines — an inline sourcemap embeds each source file's on-disk bytes (`sourcesContent`), which
+differs between Windows (CRLF working tree) and the Linux runner, making the freshness diff noisy.
 
 ### 3. Optional preview deploy (skipped until frontend is live)
 
