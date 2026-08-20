@@ -75,15 +75,18 @@ Notes:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
-      - run: npm ci
+- run: npm ci
+      - run: npx prisma generate
       - run: node esbuild.vercel.mjs
       - name: Fail if bundle is stale
-        run: git diff --exit-code -- api/index.js
+        run: git diff --exit-code -- api/
 ```
 
 Purpose: `api/index.js` is committed and must match `src/` (AGENTS.md — a stale bundle caused
 `ERR_MODULE_NOT_FOUND` before). If the diff is non-empty the PR author forgot to run
 `npm run build:vercel`; the job fails and asks for a rebuild. This is the CI twin of the husky hook.
+`npx prisma generate` runs first because `generated/` is gitignored — the fresh checkout has no
+generated client, and the bundle can't resolve `generated/prisma/*` imports without it.
 
 ### 3. Optional preview deploy (skipped until frontend is live)
 

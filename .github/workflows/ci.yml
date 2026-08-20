@@ -55,6 +55,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - run: npx prisma generate
       - run: node esbuild.vercel.mjs
       - name: Fail if bundle is stale
         run: git diff --exit-code -- api/
