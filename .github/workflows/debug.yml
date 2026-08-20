@@ -1,0 +1,34 @@
+name: Debug Bundle
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  debug-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Diagnose esbuild
+        run: |
+          node --version
+          node -e "console.log('esbuild version:', require('esbuild/package.json').version)"
+          node -e "const p=require.resolve('@esbuild/linux-x64/package.json'); console.log('linux binary pkg:', p)"
+          node -e "const esbuild=require('esbuild'); console.log('build fn type:', typeof esbuild.build)"
+      - name: Run node esbuild.vercel.mjs
+        run: |
+          set +e
+          output=$(node esbuild.vercel.mjs 2>&1)
+          code=$?
+          {
+            echo "exit code: $code"
+            echo '```'
+            echo "$output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
