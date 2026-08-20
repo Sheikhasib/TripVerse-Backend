@@ -42,7 +42,7 @@ router.post("/logout", auth(), authController.logoutUser);
 router.get("/me", auth(), authController.getMe);
 
 // Step 21 — email verification + password reset (all public; rate-limited via
-// authLimiter in app.ts to bound OTP brute force + email bombing)
+// the auth limiters in app.ts to bound OTP brute force + email bombing)
 router.post(
   "/verify-email",
   validateRequest({ body: authValidations.verifyEmailSchema }),

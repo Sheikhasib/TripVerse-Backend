@@ -46,8 +46,8 @@ the real app, with a dedicated test database.
   NOT mock the copy the app graph imports (real gateway/email/Redis calls ran and the tests failed);
   `import` statements in the test files were already `../src/...`. Keep import and mock paths in the
   same form.
-- Rate limiters are skipped when `NODE_ENV === "test"` (`src/app.ts`) so `authLimiter`
-  (5/15 min per IP) can't throttle the suites; morgan only logs in development. `NODE_ENV="test"`
+- Rate limiters are skipped when `NODE_ENV === "test"` (`src/app.ts`) so the auth
+  limiters (5/15 min credential + 10/15 min OTP per IP) can't throttle the suites; morgan only logs in development. `NODE_ENV="test"`
   was added to the config Zod enum.
 
 ## Test layout

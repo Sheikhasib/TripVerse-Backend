@@ -71,7 +71,7 @@ Verify with `GET /health` → `{ success: true, db: "connected" }`.
 - **Error handling**: `catchAsync` wrapper → `globalErrorHandler`. It maps ZodError→400, Prisma P2002→409, P2003→409, P2025→404, P1000→401, P1001→503, plus `AppError` (throws with a statusCode)
 - **Auth middleware** (not built yet): will attach `req.user`; `src/middleware/index.d.ts` types it `{ id, name, email, role: Role }` using the generated `Role` enum
 - **Pagination**: `meta` object `{ page, limit, total, totalPages }` returned with list endpoints
-- **Security**: helmet, CORS allow-list (dev + prod), `trust proxy = 1` (must stay before rate limiters), 100kb body limit (covers long-form blog content; images are URLs), two-tier rate limiting (`authLimiter` 5/15min on `/api/auth/login|register|demo-login`, `apiLimiter` 100/15min on `/api`)
+- **Security**: helmet, CORS allow-list (dev + prod), `trust proxy = 1` (must stay before rate limiters), 100kb body limit (covers long-form blog content; images are URLs), split rate limiting (`authCredentialLimiter` 5/15min on `/api/auth/login|register|reset-password`, `authOtpLimiter` 10/15min on `/api/auth/verify-email|resend-verification|forgot-password|demo-login|google`, `apiLimiter` 100/15min on `/api`)
 - **Refresh token rotation** (Step 22): every `POST /api/auth/refresh` mints a new refresh JWT and revokes the old one in a `$transaction`; the ledger (`refresh_tokens`) stores only the SHA-256 hash, never the JWT. Replaying an already-revoked token revokes the whole family (`tokenVersion` bump). **Frontend must single-flight refresh calls** (reuse the newest token / share the in-flight promise) or two-tab races trigger a false family-revoke.
 - **Uploads**: Cloudinary via multer (deps installed, module not built)
 

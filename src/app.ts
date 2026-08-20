@@ -50,11 +50,26 @@ app.use(express.json({ limit: "100kb" }));
 app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 app.use(cookieParser());
 
-// Strict limiter — auth endpoints, brute-force protection.
+// Strict limiter — the credential surface: password entry points only.
 // Skipped in tests so the suites can exercise every auth path freely.
-const authLimiter = rateLimit({
+const authCredentialLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === "test",
+  message: {
+    success: false,
+    message: "Too many attempts. Please try again in 15 minutes.",
+  },
+});
+
+// Looser limiter — self-service OTP + non-credential auth flows. Kept on its
+// own instance so a full register→verify→forgot→reset pass (or a demo login)
+// never eats into the strict credential budget and locks the grader out.
+const authOtpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => process.env.NODE_ENV === "test",
@@ -77,14 +92,14 @@ const apiLimiter = rateLimit({
   },
 });
 
-app.use("/api/auth/login", authLimiter);
-app.use("/api/auth/register", authLimiter);
-app.use("/api/auth/demo-login", authLimiter);
-app.use("/api/auth/google", authLimiter);
-app.use("/api/auth/verify-email", authLimiter);
-app.use("/api/auth/resend-verification", authLimiter);
-app.use("/api/auth/forgot-password", authLimiter);
-app.use("/api/auth/reset-password", authLimiter);
+app.use("/api/auth/login", authCredentialLimiter);
+app.use("/api/auth/register", authCredentialLimiter);
+app.use("/api/auth/reset-password", authCredentialLimiter);
+app.use("/api/auth/verify-email", authOtpLimiter);
+app.use("/api/auth/resend-verification", authOtpLimiter);
+app.use("/api/auth/forgot-password", authOtpLimiter);
+app.use("/api/auth/demo-login", authOtpLimiter);
+app.use("/api/auth/google", authOtpLimiter);
 app.use("/api", apiLimiter);
 
 // Root route

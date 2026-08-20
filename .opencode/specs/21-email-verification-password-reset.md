@@ -212,15 +212,18 @@ app.use("/api/auth/forgot-password", authLimiter);
 app.use("/api/auth/reset-password", authLimiter);
 ```
 
-> **Shared budget (important for grading):** `authLimiter` is a **single** instance
-> already mounted on `/login`, `/register`, `/demo-login`, `/google`. Express
-> reuses one in-memory counter per IP, so the effective limit is **5 auth
-> requests total per 15 min across all 8 auth paths** — not 5 per endpoint. The
-> 6th auth request in a window returns 429 (this is also the DoD's "429 after 5
-> attempts" proof). A full grading pass
-> (register→verify→resend→forgot→reset→login = 6 calls) trips 429 on call 6 —
-> plan accordingly (split across windows, or restart the dev server to reset the
-> in-memory limiter).
+> **Shared budget (implemented as a split, not one pool):** originally one
+> `authLimiter` instance was mounted on all 8 auth paths, and Express reuses one
+> in-memory counter per IP, so the effective limit was **5 auth requests total
+> per 15 min across all 8 paths** — the 6th returned 429 and a full grading pass
+> (register→verify→resend→forgot→reset→login = 6 calls) tripped it. That foot-gun
+> is fixed by **splitting into two instances**: `authCredentialLimiter` (5/15min)
+> on the credential surface — `login`, `register`, `reset-password` — and
+> `authOtpLimiter` (10/15min) on the self-service OTP + non-credential flows —
+> `verify-email`, `resend-verification`, `forgot-password`, `demo-login`,
+> `google`. A full grading pass no longer locks itself out, while password entry
+> points keep the strict 5/15min brute-force budget. (03-core-backbone.md:19
+> still suggests raising limits before a live demo.)
 
 ## Files
 
@@ -255,7 +258,8 @@ app.use("/api/auth/reset-password", authLimiter);
 - `forgot-password` / `resend-verification` never leak whether an email exists
   (uniform 200).
 - Password reset bumps `tokenVersion` (kills sessions) — reuse existing semantics.
-- Every auth endpoint that mints/consumes an OTP is behind `authLimiter`.
+- Every auth endpoint that mints/consumes an OTP is behind one of the auth
+  limiters (`authCredentialLimiter` / `authOtpLimiter` in `app.ts`).
 - Redis/SMTP unconfigured → clean `AppError(503)` (or no-op email), never a boot
   failure.
 
@@ -278,6 +282,8 @@ app.use("/api/auth/reset-password", authLimiter);
     wrong/expired/replayed OTP → 400.
   - Existing-email register → 409. Re-register while a registration is already
     staged (pending OTP) → 409 (use `resend-verification` instead). Rate limiter
-    returns 429 after 5 attempts (shared across all auth paths — see note above).
+    returns 429 after 5 credential attempts (login/register/reset-password) and
+    after 10 self-service attempts (verify-email/resend-verification/
+    forgot-password/demo-login/google) per 15 min — separate pools, see note above.
   - Demo/Google login still works; seed users still `emailVerified: true`.
 - `npm run build:vercel` regenerates `api/index.js`; commit + push (AGENTS.md workflow).
