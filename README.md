@@ -1,5 +1,7 @@
 # TripVerse Server
 
+[![CI](https://github.com/Sheikhasib/TripVerse-Backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Sheikhasib/TripVerse-Backend/actions/workflows/ci.yml)
+
 This is the **Step 2 — Data Models** build from the backend spec, working and verified.
 Read the spec files alongside this repo (`01-project-setup.md` through `15-backlog-summary.md`) and implement each step in order, in this same repo.
 

@@ -46,6 +46,8 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npx prisma migrate deploy     # applies migrations to the service DB
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/tripverse_test
       - run: npx tsc --noEmit
       - run: npm test                      # Step 24 vitest suite, DATABASE_URL_TEST env
         env:
