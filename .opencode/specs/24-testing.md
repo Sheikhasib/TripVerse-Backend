@@ -88,7 +88,7 @@ tests/
 
 ### External calls in tests
 
-- **SSLCommerz**: mock at the `sslcommerz` lib boundary (`vi.mock("../../src/lib/sslcommerz")`).
+- **SSLCommerz**: mock at the `sslcommerz` lib boundary (`vi.mock("../src/lib/sslcommerz")` — see the path gotcha above).
 - **Resend emails**: mock `src/utils/email.ts` senders to resolve; assert they're *called*, never
   that mail was delivered. Keep best-effort semantics: a rejected sender must not fail the request.
 - **Cloudinary** (uploads): only smoke-test the 401/403/auth paths; do not upload real images.

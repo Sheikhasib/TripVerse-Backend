@@ -140,10 +140,6 @@ describe("payment", () => {
     expect(confirm.status).toBe(302);
     expect(confirm.headers.location).toContain("/payment/success");
 
-    console.log("DBG validate calls:", sslcommerzValidate.mock.calls.length);
-    console.log("DBG validate result:", await sslcommerzValidate({ val_id: "val-test-1" }));
-    console.log("DBG init calls:", sslcommerzInit.mock.calls.length);
-
     const payment = await prisma.payment.findUnique({ where: { tranId } });
     expect(payment?.status).toBe(PaymentStatus.SUCCESS);
     expect(payment?.paidAt).toBeTruthy();
