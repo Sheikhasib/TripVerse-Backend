@@ -1,13 +1,18 @@
+import { Resend } from "resend";
 import config from "../config";
 import { transporter } from "../lib/nodemailer";
 import { renderTemplate } from "../templates";
 
-// Best-effort Nodemailer senders for the auth flows (Step 21) — mirrors the
-// reference backend's transporter.sendMail calls with EJS templates rendered
-// from `src/templates/*.ejs`. Every failure (missing template, SMTP error) is
+// Best-effort senders for the auth flows (Step 21) — mirrors the reference
+// backend's transporter.sendMail calls with EJS templates rendered from
+// `src/templates/*.ejs`. Every failure (missing template, SMTP error) is
 // caught and logged as a warn, never thrown, so it can't fail the business
 // write that triggered it. Call sites fire these as
 // `void Promise.allSettled([sendX(...)])`.
+//
+// Delivery path: Gmail SMTP first (works locally), then a Resend HTTP-API
+// fallback. Vercel serverless blocks outbound SMTP ports (465/587), so in
+// production only the Resend leg can actually deliver.
 
 const OTP_EXPIRATION_MINUTES = 5;
 
@@ -16,27 +21,62 @@ interface IAuthEmailDetails {
   name: string;
 }
 
+let resend: Resend | null = null;
+
+function getResend(): Resend | null {
+  if (resend) return resend;
+  if (!config.resend_api_key) return null;
+  resend = new Resend(config.resend_api_key);
+  return resend;
+}
+
 async function sendAuthMail(
   to: string,
   subject: string,
   build: () => Promise<string>,
 ): Promise<void> {
-  if (!transporter) {
-    console.warn("[email] SMTP not configured; skipping auth email.");
+  let html: string;
+  try {
+    html = await build();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[email] failed to render "${subject}" template: ${detail}`);
+    return;
+  }
+
+  if (transporter) {
+    try {
+      await transporter.sendMail({
+        from: config.smtp_user as string,
+        to,
+        subject,
+        html,
+      });
+      return;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(`[email] SMTP failed for "${subject}" to ${to}: ${detail}`);
+    }
+  }
+
+  const client = getResend();
+  if (!client) {
+    if (!transporter) {
+      console.warn("[email] No SMTP or Resend configured; skipping auth email.");
+    }
     return;
   }
 
   try {
-    const html = await build();
-    await transporter.sendMail({
-      from: config.smtp_user as string,
+    await client.emails.send({
+      from: config.email_from || "TripVerse <onboarding@resend.dev>",
       to,
       subject,
       html,
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.warn(`[email] failed to send "${subject}" to ${to}: ${detail}`);
+    console.warn(`[email] Resend failed for "${subject}" to ${to}: ${detail}`);
   }
 }
 

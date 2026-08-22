@@ -635,6 +635,9 @@ var jwtUtils = {
   verifyToken
 };
 
+// src/utils/authEmail.ts
+import { Resend } from "resend";
+
 // src/lib/nodemailer.ts
 import nodemailer from "nodemailer";
 var transporter = config_default.smtp_user && config_default.smtp_password ? nodemailer.createTransport({
@@ -664,22 +667,53 @@ var renderTemplate = (name, data) => {
 
 // src/utils/authEmail.ts
 var OTP_EXPIRATION_MINUTES = 5;
+var resend = null;
+function getResend() {
+  if (resend) return resend;
+  if (!config_default.resend_api_key) return null;
+  resend = new Resend(config_default.resend_api_key);
+  return resend;
+}
 async function sendAuthMail(to, subject, build) {
-  if (!transporter) {
-    console.warn("[email] SMTP not configured; skipping auth email.");
+  let html;
+  try {
+    html = await build();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[email] failed to render "${subject}" template: ${detail}`);
+    return;
+  }
+  if (transporter) {
+    try {
+      await transporter.sendMail({
+        from: config_default.smtp_user,
+        to,
+        subject,
+        html
+      });
+      return;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(`[email] SMTP failed for "${subject}" to ${to}: ${detail}`);
+    }
+  }
+  const client = getResend();
+  if (!client) {
+    if (!transporter) {
+      console.warn("[email] No SMTP or Resend configured; skipping auth email.");
+    }
     return;
   }
   try {
-    const html = await build();
-    await transporter.sendMail({
-      from: config_default.smtp_user,
+    await client.emails.send({
+      from: config_default.email_from || "TripVerse <onboarding@resend.dev>",
       to,
       subject,
       html
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.warn(`[email] failed to send "${subject}" to ${to}: ${detail}`);
+    console.warn(`[email] Resend failed for "${subject}" to ${to}: ${detail}`);
   }
 }
 var sendVerificationOtpEmail = async (details) => {
@@ -1927,13 +1961,13 @@ import { Router as Router4 } from "express";
 import httpStatus5 from "http-status";
 
 // src/utils/email.ts
-import { Resend } from "resend";
-var resend = null;
-function getResend() {
-  if (resend) return resend;
+import { Resend as Resend2 } from "resend";
+var resend2 = null;
+function getResend2() {
+  if (resend2) return resend2;
   if (!config_default.resend_api_key) return null;
-  resend = new Resend(config_default.resend_api_key);
-  return resend;
+  resend2 = new Resend2(config_default.resend_api_key);
+  return resend2;
 }
 function escapeHtml(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
@@ -1966,7 +2000,7 @@ var emailLayout = (content) => `
   </div>
 `;
 var sendContactNotification = async (details) => {
-  const client = getResend();
+  const client = getResend2();
   if (!client || !config_default.contact_receiver_email) {
     console.warn("[email] Resend not configured; skipping contact notification.");
     return;
@@ -2004,7 +2038,7 @@ var sendContactNotification = async (details) => {
   );
 };
 var sendContactAutoReply = async (details) => {
-  const client = getResend();
+  const client = getResend2();
   if (!client || !details.email) {
     console.warn("[email] Resend not configured; skipping contact auto-reply.");
     return;
@@ -2027,7 +2061,7 @@ var sendContactAutoReply = async (details) => {
   );
 };
 var sendBookingEmail = async (details) => {
-  const client = getResend();
+  const client = getResend2();
   if (!client || !details.email) {
     console.warn("[email] Resend not configured; skipping booking email.");
     return;
@@ -2094,7 +2128,7 @@ var sendBookingEmail = async (details) => {
   );
 };
 var sendRefundEmail = async (details) => {
-  const client = getResend();
+  const client = getResend2();
   if (!client || !details.email) {
     console.warn("[email] Resend not configured; skipping refund email.");
     return;
