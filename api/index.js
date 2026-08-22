@@ -3134,7 +3134,9 @@ var listPackageReviews = async (packageId, query) => {
         comment: true,
         createdAt: true,
         updatedAt: true,
-        user: { select: { name: true, avatarUrl: true } }
+        // `id` lets the client show ownership controls (edit/delete) on the
+        // author's own reviews without guessing from the display name.
+        user: { select: { id: true, name: true, avatarUrl: true } }
       },
       orderBy: { createdAt: "desc" },
       skip,
