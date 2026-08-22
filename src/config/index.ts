@@ -13,6 +13,8 @@ dotenv.config({
 const envSchema = z.object({
   PORT: z.string().default("4000"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  // Injected by Vercel on deployed environments; absent locally.
+  VERCEL_ENV: z.string().optional(),
 
   // Frontend origins for CORS + payment redirects. The frontend may not be
   // deployed yet (or may be rebuilt), so both are optional: the backend must
@@ -93,6 +95,13 @@ const env = parsed.data;
 const config = {
   port: env.PORT,
   node_env: env.NODE_ENV,
+
+  // True when serving the deployed production host. VERCEL_ENV is set by the
+  // platform itself and cannot be overridden by dashboard env vars, so this
+  // stays correct even if NODE_ENV is accidentally copied as "development"
+  // onto production — which silently routed payment redirects to localhost.
+  is_production:
+    env.NODE_ENV === "production" || env.VERCEL_ENV === "production",
 
   // Frontend origins for CORS + payment redirects. Localhost always wins for
   // local testing; production uses the Vercel frontend URL, falling back to the

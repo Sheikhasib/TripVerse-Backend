@@ -23,6 +23,8 @@ dotenv.config({
 var envSchema = z.object({
   PORT: z.string().default("4000"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  // Injected by Vercel on deployed environments; absent locally.
+  VERCEL_ENV: z.string().optional(),
   // Frontend origins for CORS + payment redirects. The frontend may not be
   // deployed yet (or may be rebuilt), so both are optional: the backend must
   // never refuse to boot just because a UI host isn't live. Routes that need a
@@ -88,6 +90,11 @@ var env = parsed.data;
 var config = {
   port: env.PORT,
   node_env: env.NODE_ENV,
+  // True when serving the deployed production host. VERCEL_ENV is set by the
+  // platform itself and cannot be overridden by dashboard env vars, so this
+  // stays correct even if NODE_ENV is accidentally copied as "development"
+  // onto production — which silently routed payment redirects to localhost.
+  is_production: env.NODE_ENV === "production" || env.VERCEL_ENV === "production",
   // Frontend origins for CORS + payment redirects. Localhost always wins for
   // local testing; production uses the Vercel frontend URL, falling back to the
   // backend URL so the API stays reachable even before the UI is deployed.
@@ -704,7 +711,7 @@ var sendWelcomeEmail = async (details) => {
     "Welcome to TripVerse",
     () => renderTemplate("welcome-email", {
       name: details.name,
-      frontendUrl: config_default.node_env === "production" ? config_default.frontend_url_prod : config_default.frontend_url_dev
+      frontendUrl: config_default.is_production ? config_default.frontend_url_prod : config_default.frontend_url_dev
     })
   );
 };
@@ -5198,7 +5205,7 @@ var confirmPayment = catchAsync(
       tranId,
       req.body
     );
-    const redirectBase = config_default.node_env === "production" ? config_default.frontend_url_prod : config_default.frontend_url_dev;
+    const redirectBase = config_default.is_production && config_default.frontend_url_prod ? config_default.frontend_url_prod : config_default.frontend_url_dev;
     const page = ["success", "fail", "cancel"].includes(status) ? status : "fail";
     res.redirect(302, `${redirectBase}/payment/${page}?bookingId=${bookingId}`);
   }

@@ -37,7 +37,7 @@ const confirmPayment = catchAsync(
     );
 
     const redirectBase =
-      config.node_env === "production"
+      config.is_production && config.frontend_url_prod
         ? config.frontend_url_prod
         : config.frontend_url_dev;
     const page = ["success", "fail", "cancel"].includes(status) ? status : "fail";

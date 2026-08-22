@@ -75,10 +75,9 @@ export const sendWelcomeEmail = async (
   await sendAuthMail(details.email, "Welcome to TripVerse", () =>
     renderTemplate("welcome-email", {
       name: details.name,
-      frontendUrl:
-        config.node_env === "production"
-          ? config.frontend_url_prod
-          : config.frontend_url_dev,
+      frontendUrl: config.is_production
+        ? config.frontend_url_prod
+        : config.frontend_url_dev,
     }),
   );
 };
