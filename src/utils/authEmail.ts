@@ -11,9 +11,9 @@ import { renderTemplate } from "../templates";
 // `runInBackground([sendX(...)])` so the runtime stays alive until the send
 // settles (see utils/background.ts).
 //
-// Delivery path: Gmail SMTP first (works locally), then a Resend HTTP-API
-// fallback. Vercel serverless blocks outbound SMTP ports (465/587), so in
-// production only the Resend leg can actually deliver.
+// Delivery path is environment-aware: Vercel serverless blocks outbound SMTP
+// ports (465/587), so production sends go straight to the Resend HTTP API;
+// local/dev tries Gmail SMTP first and only falls back to Resend.
 
 const OTP_EXPIRATION_MINUTES = 5;
 
@@ -45,7 +45,9 @@ async function sendAuthMail(
     return;
   }
 
-  if (transporter) {
+  // SMTP is only attempted where outbound SMTP is actually reachable —
+  // Vercel serverless blackholes ports 465/587, so production skips it.
+  if (transporter && !config.is_production) {
     try {
       await transporter.sendMail({
         from: config.smtp_user as string,
@@ -62,9 +64,11 @@ async function sendAuthMail(
 
   const client = getResend();
   if (!client) {
-    if (!transporter) {
-      console.warn("[email] No SMTP or Resend configured; skipping auth email.");
-    }
+    console.warn(
+      `[email] no delivery path for "${subject}" to ${to}: ${
+        config.is_production ? "Resend" : "SMTP/Resend"
+      } not configured.`,
+    );
     return;
   }
 
