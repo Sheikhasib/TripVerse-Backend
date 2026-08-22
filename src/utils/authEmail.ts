@@ -68,12 +68,18 @@ async function sendAuthMail(
   }
 
   try {
-    await client.emails.send({
+    const result = await client.emails.send({
       from: config.email_from || "TripVerse <onboarding@resend.dev>",
       to,
       subject,
       html,
     });
+    // The Resend SDK resolves API errors as { error } instead of throwing.
+    if (result.error) {
+      console.warn(
+        `[email] Resend rejected "${subject}" to ${to}: ${result.error.message}`,
+      );
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.warn(`[email] Resend failed for "${subject}" to ${to}: ${detail}`);
