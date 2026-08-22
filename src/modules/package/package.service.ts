@@ -5,6 +5,7 @@ import { prisma } from "../../lib/prisma";
 import { AppError } from "../../utils/appError";
 import { notify } from "../../utils/notification";
 import { slugify } from "../../utils/slugify";
+import { runInBackground } from "../../utils/background";
 import {
   ICreatePackagePayload,
   IInternalPackageQuery,
@@ -348,7 +349,7 @@ const changePackageStatus = async (
         ? `Your package "${tourPackage.title}" has been approved and is now live.`
         : `Your package "${tourPackage.title}" was rejected. Please review and resubmit.`,
   };
-  void Promise.allSettled([
+  runInBackground([
     notify(
       tourPackage.agentId,
       notified.type,

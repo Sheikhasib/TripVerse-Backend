@@ -5,6 +5,7 @@ import { AppError } from "../../utils/appError";
 import { sslcommerzRefund } from "../../lib/sslcommerz";
 import { sendBookingEmail, sendRefundEmail } from "../../utils/email";
 import { notify } from "../../utils/notification";
+import { runInBackground } from "../../utils/background";
 import {
   IBookingQuery,
   IBookingSearchQuery,
@@ -59,14 +60,18 @@ const TRANSITIONS: Partial<
   },
   [BookingStatus.PAID]: {
     [BookingStatus.CONFIRMED]: { allowed: isAgentOwnerOrAdmin },
-    [BookingStatus.CANCELLED]: { allowed: canManage },
+    // Paid bookings are NOT customer-cancellable (refund policy): the customer
+    // applies for a refund instead; the agent-owner/admin direct-cancel keeps
+    // the agency-initiated 100% auto-refund path.
+    [BookingStatus.CANCELLED]: { allowed: isAgentOwnerOrAdmin },
   },
   [BookingStatus.CONFIRMED]: {
     [BookingStatus.COMPLETED]: {
       allowed: isAgentOwnerOrAdmin,
       requiresTravelDatePassed: true,
     },
-    [BookingStatus.CANCELLED]: { allowed: canManage },
+    // Same refund-policy rule as PAID → CANCELLED above.
+    [BookingStatus.CANCELLED]: { allowed: isAgentOwnerOrAdmin },
     [BookingStatus.PENDING]: {
       allowed: isAgentOwnerOrAdmin,
       beforeTravelDate: true,
@@ -214,7 +219,7 @@ const createBooking = async (userId: string, payload: ICreateBooking) => {
     select: { name: true, email: true },
   });
   if (user) {
-    void Promise.allSettled([
+runInBackground([
       sendBookingEmail({
         email: user.email,
         name: user.name,
@@ -228,7 +233,7 @@ const createBooking = async (userId: string, payload: ICreateBooking) => {
   }
 
   // best-effort in-app notification to the package agent (never fails request)
-  void Promise.allSettled([
+  runInBackground([
     notify(
       tourPackage.agentId,
       NotificationType.BOOKING_CREATED,
@@ -426,7 +431,7 @@ const issueRefunds = async (
   }
 
   if (refundRefs.length > 0) {
-    void Promise.allSettled([
+runInBackground([
       sendRefundEmail({
         email: ctx.email,
         name: ctx.name,
@@ -542,7 +547,7 @@ const updateBookingStatus = async (
 
   // best-effort email for money-status changes
   if (to === BookingStatus.CONFIRMED || to === BookingStatus.CANCELLED) {
-    void Promise.allSettled([
+runInBackground([
       sendBookingEmail({
         email: booking.user.email,
         name: booking.user.name,
@@ -560,7 +565,7 @@ const updateBookingStatus = async (
   // the agent cancels → the customer hears; an ADMIN cancels → both hear, since
   // the admin acts on behalf of the platform, not either side.
   if (to === BookingStatus.CONFIRMED) {
-    void Promise.allSettled([
+runInBackground([
       notify(
         booking.userId,
         NotificationType.BOOKING_CONFIRMED,
@@ -584,7 +589,7 @@ const updateBookingStatus = async (
       recipients.push(booking.userId, booking.package.agentId);
     }
 
-    void Promise.allSettled(
+    runInBackground(
       [...new Set(recipients)].map((recipientId) =>
         notify(
           recipientId,

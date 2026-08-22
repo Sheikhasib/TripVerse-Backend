@@ -8,7 +8,8 @@ import { renderTemplate } from "../templates";
 // `src/templates/*.ejs`. Every failure (missing template, SMTP error) is
 // caught and logged as a warn, never thrown, so it can't fail the business
 // write that triggered it. Call sites fire these as
-// `void Promise.allSettled([sendX(...)])`.
+// `runInBackground([sendX(...)])` so the runtime stays alive until the send
+// settles (see utils/background.ts).
 //
 // Delivery path: Gmail SMTP first (works locally), then a Resend HTTP-API
 // fallback. Vercel serverless blocks outbound SMTP ports (465/587), so in

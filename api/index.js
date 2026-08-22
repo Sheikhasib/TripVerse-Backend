@@ -800,6 +800,12 @@ var sendPasswordResetSuccessEmail = async (details) => {
   );
 };
 
+// src/utils/background.ts
+import { waitUntil } from "@vercel/functions";
+var runInBackground = (work) => {
+  void waitUntil(Promise.allSettled(work));
+};
+
 // src/modules/auth/auth.service.ts
 var OTP_EXPIRATION_SECONDS = 5 * 60;
 var sha256 = (value) => crypto2.createHash("sha256").update(value).digest("hex");
@@ -892,7 +898,7 @@ var registerUser = async (payload) => {
       value: OTP_EXPIRATION_SECONDS
     }
   });
-  void Promise.allSettled([
+  runInBackground([
     sendVerificationOtpEmail({ email, name, otp: otpValue })
   ]);
 };
@@ -930,7 +936,7 @@ var verifyEmail = async (payload) => {
     omit: { password: true }
   });
   await client.del(registrationDataKey);
-  void Promise.allSettled([
+  runInBackground([
     sendWelcomeEmail({ email: createdUser.email, name: createdUser.name })
   ]);
   const tokens = await issueTokens(createdUser);
@@ -953,7 +959,7 @@ var resendVerification = async (payload) => {
       value: OTP_EXPIRATION_SECONDS
     }
   });
-  void Promise.allSettled([
+  runInBackground([
     sendVerificationOtpEmail({ email, name: userPayload.name, otp: otpValue })
   ]);
 };
@@ -972,7 +978,7 @@ var forgotPassword = async (payload) => {
       value: OTP_EXPIRATION_SECONDS
     }
   });
-  void Promise.allSettled([
+  runInBackground([
     sendForgotPasswordOtpEmail({
       email: isUserExists.email,
       name: isUserExists.name,
@@ -1005,7 +1011,7 @@ var resetPassword = async (payload) => {
     }
   });
   await client.del(key);
-  void Promise.allSettled([
+  runInBackground([
     sendPasswordResetSuccessEmail({
       email: isUserExists.email,
       name: isUserExists.name
@@ -2719,7 +2725,7 @@ var createBooking = async (userId, payload) => {
     select: { name: true, email: true }
   });
   if (user) {
-    void Promise.allSettled([
+    runInBackground([
       sendBookingEmail({
         email: user.email,
         name: user.name,
@@ -2731,7 +2737,7 @@ var createBooking = async (userId, payload) => {
       })
     ]);
   }
-  void Promise.allSettled([
+  runInBackground([
     notify(
       tourPackage.agentId,
       NotificationType.BOOKING_CREATED,
@@ -2877,7 +2883,7 @@ var issueRefunds = async (bookingId, ctx) => {
     }
   }
   if (refundRefs.length > 0) {
-    void Promise.allSettled([
+    runInBackground([
       sendRefundEmail({
         email: ctx.email,
         name: ctx.name,
@@ -2963,7 +2969,7 @@ var updateBookingStatus = async (id, payload, actor) => {
     });
   }
   if (to === BookingStatus.CONFIRMED || to === BookingStatus.CANCELLED) {
-    void Promise.allSettled([
+    runInBackground([
       sendBookingEmail({
         email: booking.user.email,
         name: booking.user.name,
@@ -2976,7 +2982,7 @@ var updateBookingStatus = async (id, payload, actor) => {
     ]);
   }
   if (to === BookingStatus.CONFIRMED) {
-    void Promise.allSettled([
+    runInBackground([
       notify(
         booking.userId,
         NotificationType.BOOKING_CONFIRMED,
@@ -2995,7 +3001,7 @@ var updateBookingStatus = async (id, payload, actor) => {
     } else if (actor.role === Role.ADMIN) {
       recipients.push(booking.userId, booking.package.agentId);
     }
-    void Promise.allSettled(
+    runInBackground(
       [...new Set(recipients)].map(
         (recipientId) => notify(
           recipientId,
@@ -3990,7 +3996,7 @@ var changePackageStatus = async (packageId, payload) => {
     title: payload.status === PackageStatus.APPROVED ? "Package approved" : "Package rejected",
     message: payload.status === PackageStatus.APPROVED ? `Your package "${tourPackage.title}" has been approved and is now live.` : `Your package "${tourPackage.title}" was rejected. Please review and resubmit.`
   };
-  void Promise.allSettled([
+  runInBackground([
     notify(
       tourPackage.agentId,
       notified.type,
@@ -5319,7 +5325,7 @@ var processGatewayResult = async (bookingId, tranId, result) => {
     return updated;
   });
   const bookingAfter = await prisma.booking.findUnique({ where: { id: bookingId } });
-  void Promise.allSettled([
+  runInBackground([
     sendBookingEmail({
       email: payment.booking.user.email,
       name: payment.booking.user.name,
@@ -5850,7 +5856,7 @@ var createRefundRequest = async (userId, payload) => {
       reviewer: refundUserSelect
     }
   });
-  void Promise.allSettled([
+  runInBackground([
     sendRefundReceivedEmail({
       email: booking.user.email,
       name: booking.user.name,
@@ -5946,7 +5952,7 @@ var decideRefundRequest = async (id, payload, admin) => {
     if (flipped.count === 0) {
       throw new AppError(409, "This refund request has already been decided.");
     }
-    void Promise.allSettled([
+    runInBackground([
       sendRefundDecisionEmail({
         email: request.booking.user.email,
         name: request.booking.user.name,
@@ -6069,7 +6075,7 @@ var decideRefundRequest = async (id, payload, admin) => {
       data: { status: RefundRequestStatus.REFUNDED }
     });
   }
-  void Promise.allSettled([
+  runInBackground([
     sendRefundDecisionEmail({
       email: request.booking.user.email,
       name: request.booking.user.name,

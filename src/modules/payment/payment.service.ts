@@ -4,6 +4,7 @@ import { prisma } from "../../lib/prisma";
 import { SslcommerzInitResult, SslcommerzValidationResult, generateTranId, sslcommerzInit, sslcommerzValidate } from "../../lib/sslcommerz";
 import { AppError } from "../../utils/appError";
 import { sendBookingEmail } from "../../utils/email";
+import { runInBackground } from "../../utils/background";
 import { IGatewayResult, IPaymentCreateRequest, IPaymentGatewayOutcome } from "./payment.interface";
 
 // The gateway POSTs to these URLs server-to-server, so the host must be
@@ -237,7 +238,7 @@ const processGatewayResult = async (
   const bookingAfter = await prisma.booking.findUnique({ where: { id: bookingId } });
 
   // best-effort "payment received" email — never fails the callback
-  void Promise.allSettled([
+  runInBackground([
     sendBookingEmail({
       email: payment.booking.user.email,
       name: payment.booking.user.name,

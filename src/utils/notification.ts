@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma";
 // Best-effort in-app notification — mirrors the email helpers. A failure is
 // logged and swallowed, never thrown, so a notification insert can't fail the
 // business write that caused it. Call sites fire it as
-// `void Promise.allSettled([notify(...)])`.
+// `runInBackground([notify(...)])`.
 export const notify = async (
   userId: string,
   type: NotificationType,

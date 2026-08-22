@@ -13,6 +13,7 @@ import {
   sendVerificationOtpEmail,
   sendWelcomeEmail,
 } from "../../utils/authEmail";
+import { runInBackground } from "../../utils/background";
 import { Prisma } from "../../../generated/prisma/client";
 import { Role } from "../../../generated/prisma/enums";
 import {
@@ -175,7 +176,7 @@ const registerUser = async (payload: IAuth) => {
 
   // Best-effort email — a send failure never fails registration (TripVerse
   // convention); the user can recover via resend-verification.
-  void Promise.allSettled([
+  runInBackground([
     sendVerificationOtpEmail({ email, name, otp: otpValue }),
   ]);
 };
@@ -233,7 +234,7 @@ const verifyEmail = async (payload: IVerifyEmailPayload) => {
   // Staged payload consumed — nothing remains in Redis.
   await client.del(registrationDataKey);
 
-  void Promise.allSettled([
+  runInBackground([
     sendWelcomeEmail({ email: createdUser.email, name: createdUser.name }),
   ]);
 
@@ -269,7 +270,7 @@ const resendVerification = async (payload: IResendVerificationPayload) => {
     },
   });
 
-  void Promise.allSettled([
+  runInBackground([
     sendVerificationOtpEmail({ email, name: userPayload.name, otp: otpValue }),
   ]);
 };
@@ -306,7 +307,7 @@ const forgotPassword = async (payload: IForgotPasswordPayload) => {
     },
   });
 
-  void Promise.allSettled([
+  runInBackground([
     sendForgotPasswordOtpEmail({
       email: isUserExists.email,
       name: isUserExists.name,
@@ -358,7 +359,7 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
   // Single-use OTP — delete after a successful reset.
   await client.del(key);
 
-  void Promise.allSettled([
+  runInBackground([
     sendPasswordResetSuccessEmail({
       email: isUserExists.email,
       name: isUserExists.name,
