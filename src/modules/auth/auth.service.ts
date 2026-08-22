@@ -174,11 +174,12 @@ const registerUser = async (payload: IAuth) => {
     },
   });
 
-  // Best-effort email — a send failure never fails registration (TripVerse
-  // convention); the user can recover via resend-verification.
-  runInBackground([
-    sendVerificationOtpEmail({ email, name, otp: otpValue }),
-  ]);
+  // OTP delivery is part of the request, not background work — serverless
+  // runtimes may freeze fire-and-forget promises right after the response,
+  // silently dropping the send (observed on Vercel). The helpers never throw
+  // (all failures are logged internally), so awaiting is safe and adds only
+  // the Resend HTTP round-trip.
+  await sendVerificationOtpEmail({ email, name, otp: otpValue });
 };
 
 // ── Verify email (creates the user + auto-login) ─────────────────────────
@@ -270,9 +271,7 @@ const resendVerification = async (payload: IResendVerificationPayload) => {
     },
   });
 
-  runInBackground([
-    sendVerificationOtpEmail({ email, name: userPayload.name, otp: otpValue }),
-  ]);
+  await sendVerificationOtpEmail({ email, name: userPayload.name, otp: otpValue });
 };
 
 // ── Forgot password ──────────────────────────────────────────────────────
@@ -307,13 +306,11 @@ const forgotPassword = async (payload: IForgotPasswordPayload) => {
     },
   });
 
-  runInBackground([
-    sendForgotPasswordOtpEmail({
-      email: isUserExists.email,
-      name: isUserExists.name,
-      otp,
-    }),
-  ]);
+  await sendForgotPasswordOtpEmail({
+    email: isUserExists.email,
+    name: isUserExists.name,
+    otp,
+  });
 };
 
 // ── Reset password ───────────────────────────────────────────────────────

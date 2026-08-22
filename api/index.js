@@ -890,9 +890,7 @@ var registerUser = async (payload) => {
       value: OTP_EXPIRATION_SECONDS
     }
   });
-  runInBackground([
-    sendVerificationOtpEmail({ email, name, otp: otpValue })
-  ]);
+  await sendVerificationOtpEmail({ email, name, otp: otpValue });
 };
 var verifyEmail = async (payload) => {
   const { otp } = payload;
@@ -951,9 +949,7 @@ var resendVerification = async (payload) => {
       value: OTP_EXPIRATION_SECONDS
     }
   });
-  runInBackground([
-    sendVerificationOtpEmail({ email, name: userPayload.name, otp: otpValue })
-  ]);
+  await sendVerificationOtpEmail({ email, name: userPayload.name, otp: otpValue });
 };
 var forgotPassword = async (payload) => {
   const email = payload.email.trim().toLowerCase();
@@ -970,13 +966,11 @@ var forgotPassword = async (payload) => {
       value: OTP_EXPIRATION_SECONDS
     }
   });
-  runInBackground([
-    sendForgotPasswordOtpEmail({
-      email: isUserExists.email,
-      name: isUserExists.name,
-      otp
-    })
-  ]);
+  await sendForgotPasswordOtpEmail({
+    email: isUserExists.email,
+    name: isUserExists.name,
+    otp
+  });
 };
 var resetPassword = async (payload) => {
   const { newPassword, otp } = payload;
