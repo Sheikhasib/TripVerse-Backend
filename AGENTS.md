@@ -1,7 +1,12 @@
 # TripVerse Server
 
 Backend API for TripVerse (travel packages, bookings, reviews). Scaffolded from a multi-step spec
-(`01-project-setup.md` → `15-backlog-summary.md`). **Currently: Steps 1-5 done — project setup, full Prisma schema (7 models + 6 enums, migration applied), auth module (register/login/google/demo-login/refresh/logout/me + RBAC middleware + admin user management), and uploads module (`POST /api/uploads/image` → Cloudinary, AGENT/ADMIN only).
+(`01-project-setup.md` → `26-refund-request-workflow.md` under `.opencode/specs/`). **All steps 1–26
+are implemented**: full Prisma schema (13 models + 10 enums), auth (+ email OTP verification,
+Google login, refresh-token rotation with reuse detection, admin user management), uploads → Cloudinary,
+contact, categories, packages, bookings, SSLCommerz payments + real gateway refunds, review moderation
+(+ edit/soft-delete), blog (+ comments), wishlist, notifications, dashboard analytics, Vitest suite
+(82 tests / 11 files), GitHub Actions CI, and a policy-based refund-request workflow (`docs/REFUND_POLICY.md`).
 
 > **Workflow rule:** commit to git continuously as the work progresses — at minimum once per spec step, and more often for substantial milestones within a step (e.g. after a feature module's endpoints are verified). Push after each commit. Never leave uncommitted work at the end of a session.
 
@@ -26,9 +31,9 @@ Verify with `GET /health` → `{ success: true, db: "connected" }`.
 | `npm start` | Run compiled `dist/server.js` |
 | `npx prisma generate` | Regenerate client from schema |
 | `npx prisma migrate dev --name <name>` | Create/apply a migration |
-| `npx prisma db seed` | Run `prisma/seed.ts` (exists in package config; script not built yet) |
+| `npx prisma db seed` | Run `prisma/seed.ts` (users, categories, packages) |
 | `npm run build:vercel` | Manually rebuild `api/index.js` bundle (auto via pre-commit hook) |
-| `npm test` | Vitest suite (67 tests, 10 suites) against `DATABASE_URL_TEST` |
+| `npm test` | Vitest suite (82 tests, 11 files) against `DATABASE_URL_TEST` |
 | `npx tsc --noEmit` | Typecheck (also validates test files) |
 
 `prisma.config.ts` supplies the schema path, so **no `--schema=` flag is needed**. Use `npx tsc --noEmit` for a typecheck.
@@ -44,17 +49,22 @@ Verify with `GET /health` → `{ success: true, db: "connected" }`.
 
 - **Express v5** + **Prisma v7** (PostgreSQL via `@prisma/adapter-pg`)
 - **ESM** (`"type": "module"`), target ES2023, `moduleResolution: bundler`, strict TS
-- **Zod** for env validation (`src/config/index.ts`) and intended for request validation
-- **Planned module layout** (GearUp conventions): `*.route.ts` → `*.controller.ts` → `*.service.ts` under `src/modules/<name>/`
+- **Zod** for env validation (`src/config/index.ts`) and request validation
+- **Module layout** (GearUp conventions): `*.route.ts` → `*.controller.ts` → `*.service.ts` under `src/modules/<name>/`
 - No DI container — singletons imported directly (prisma, config, jwt, cloudinary)
+- **Fire-and-forget work** (emails, notifications) MUST go through `runInBackground([...])` (`src/utils/background.ts`) — a bare `void Promise.allSettled(...)` gets frozen mid-send on Vercel serverless once the response returns
 
 ## Prisma specifics
 
-- Schema is **multi-file** under `prisma/schema/` — one file per model (`user.prisma`, `category.prisma`, `tourPackage.prisma`, `booking.prisma`, `review.prisma`, `contactMessage.prisma`, `blogPost.prisma`) + `enums.prisma` + `schema.prisma` (generator + datasource). `prisma.config.ts` sets the schema path — do not pass `--schema=`
+- Schema is **multi-file** under `prisma/schema/` — one file per model (`user.prisma`, `category.prisma`, `tourPackage.prisma`, `booking.prisma`, `payment.prisma`, `review.prisma`, `contactMessage.prisma`, `blogPost.prisma`, `blogComment.prisma`, `wishlistItem.prisma`, `notification.prisma`, `refreshToken.prisma`, `refundRequest.prisma`) + `enums.prisma` + `schema.prisma` (generator + datasource). `prisma.config.ts` sets the schema path — do not pass `--schema=`
 - Generated client output: `../../generated/prisma` (custom path, not `node_modules/.prisma`)
 - Imports come from `../../generated/prisma/client`, `../../generated/prisma/enums`, and `../../generated/prisma/models` (WhereInput types)
 - `generated/` and `dist/` are gitignored — run `npx prisma generate` after clone
-- **Models are built** (Step 2): `User`, `Category`, `TourPackage`, `Booking`, `Review`, `ContactMessage`, `BlogPost` + enums `Role`, `UserStatus`, `AuthProvider`, `PackageStatus`, `BookingStatus`, `PostStatus` — all `@@map` to snake_case tables (`users`, `tour_packages`, ...)
+- **All 13 models are built**: `User`, `Category`, `TourPackage`, `Booking`, `Payment`, `Review`,
+  `ContactMessage`, `BlogPost`, `BlogComment`, `WishlistItem`, `Notification`, `RefreshToken`,
+  `RefundRequest` + enums `Role`, `UserStatus`, `AuthProvider`, `PackageStatus`, `BookingStatus`,
+  `PaymentStatus`, `RefundReasonCategory`, `RefundRequestStatus`, `PostStatus`, `NotificationType`
+  — all `@@map` to snake_case tables (`users`, `tour_packages`, ...)
 - Money is `Decimal @db.Decimal(10, 2)` (`price`, `totalPrice`) — map to `Number()` before returning from services
 - `tsconfig.json` has `rootDir` commented out (GearUp's fix) so the generated client outside `src/` doesn't break `tsc`
 
@@ -66,23 +76,25 @@ Verify with `GET /health` → `{ success: true, db: "connected" }`.
 
 ## API conventions
 
-- **Base paths planned**: `/api/auth`, `/api/users`, `/api/uploads`, `/api/contact`, `/api/categories`, `/api/packages`, `/api/bookings`, `/api/reviews`, `/api/blog`, `/api/dashboard` — routes are commented placeholders in `src/app.ts:94`
+- **Base paths (all live)**: `/api/auth`, `/api/users`, `/api/uploads`, `/api/contact`, `/api/categories`, `/api/packages`, `/api/bookings`, `/api/reviews`, `/api/blog`, `/api/dashboard`, `/api/payments`, `/api/wishlist`, `/api/notifications`, `/api/refunds` — mounted in `src/app.ts`
 - **Response shape**: `sendResponse(res, { success, statusCode, message, data, meta })` (`src/utils/sendResponse.ts`)
 - **Error handling**: `catchAsync` wrapper → `globalErrorHandler`. It maps ZodError→400, Prisma P2002→409, P2003→409, P2025→404, P1000→401, P1001→503, plus `AppError` (throws with a statusCode)
-- **Auth middleware** (not built yet): will attach `req.user`; `src/middleware/index.d.ts` types it `{ id, name, email, role: Role }` using the generated `Role` enum
+- **Auth middleware** attaches `req.user`; `src/middleware/index.d.ts` types it `{ id, name, email, role: Role }` using the generated `Role` enum
 - **Pagination**: `meta` object `{ page, limit, total, totalPages }` returned with list endpoints
 - **Security**: helmet, CORS allow-list (dev + prod), `trust proxy = 1` (must stay before rate limiters), 100kb body limit (covers long-form blog content; images are URLs), split rate limiting (`authCredentialLimiter` 5/15min on `/api/auth/login|register|reset-password`, `authOtpLimiter` 10/15min on `/api/auth/verify-email|resend-verification|forgot-password|demo-login|google`, `apiLimiter` 100/15min on `/api`)
 - **Refresh token rotation** (Step 22): every `POST /api/auth/refresh` mints a new refresh JWT and revokes the old one in a `$transaction`; the ledger (`refresh_tokens`) stores only the SHA-256 hash, never the JWT. Replaying an already-revoked token revokes the whole family (`tokenVersion` bump). **Frontend must single-flight refresh calls** (reuse the newest token / share the in-flight promise) or two-tab races trigger a false family-revoke.
-- **Uploads**: Cloudinary via multer (deps installed, module not built)
+- **Refund workflow** (Step 26): customers cannot cancel `PAID`/`CONFIRMED` bookings — they apply via `POST /api/refunds` (reason category + evidence URL for docs-backed categories); admins decide via `PATCH /api/refunds/:id/decision`. Tier snapshot locks at submission; approval is a double-CAS `$transaction` (request + booking) and payout allocates across settled payments sequentially. Policy: `docs/REFUND_POLICY.md`. Max 2 applications per booking.
+- **Uploads**: Cloudinary via multer — `POST /api/uploads/image`, USER/AGENT/ADMIN (evidence photos)
 
 ## Notable absences
 
-- No seed script yet (Step 4+), no CI/CD, no Docker, no lint, no formatter
+- No Docker, no lint, no formatter
 
 ## Tests (Step 24)
 
 - **Vitest 4 + supertest** under `tests/` (auth, booking, payment, review, wishlist, notification,
-  blog, contact, dashboard, email). `npm test` = `vitest run`; `fileParallelism: false` (sequential).
+  blog, contact, dashboard, email, refund). `npm test` = `vitest run`; `fileParallelism: false`
+  (sequential).
 - **`DATABASE_URL_TEST` points at the shared live DB** (user-approved: no disposable Postgres is
   available) — the suite **never truncates**. Tests use unique UUID keys; `tests/setup.ts` cleanup
   deletes only the rows a file created, children before parents. **Never add truncation against this
@@ -92,4 +104,6 @@ Verify with `GET /health` → `{ success: true, db: "connected" }`.
   `resend` package (email.test). `prisma` stays real. Mock specifiers from `tests/` MUST use the
   `../src/...` form (a `../../src/...` mock silently misses the app's import graph).
 - Rate limiters skip when `NODE_ENV === "test"`; `NODE_ENV="test"` is in the config Zod enum.
+- Mock call history **accumulates across tests in a file** — add `beforeEach(() => mock.mockClear())`
+  before any `toHaveBeenCalledTimes(n)` assertions.
 - Mock paths gotcha + full details: `.opencode/specs/24-testing.md`.
