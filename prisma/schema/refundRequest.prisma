@@ -1,0 +1,33 @@
+model RefundRequest {
+  id        String @id @default(uuid())
+
+  bookingId String
+  userId    String
+
+  category    RefundReasonCategory
+  reason      String @db.Text // free-text explanation from the customer
+  evidenceUrl String? // Cloudinary URL (uploads module); required for docs-backed categories
+
+  // policy snapshot at submission — immutable after create
+  daysBeforeTravel    Int // whole days between submission and travel date
+  suggestedPercentage Int // tier/category suggestion shown to the admin
+
+  status             RefundRequestStatus @default(PENDING)
+  approvedPercentage Int? // final admin-decided pct (0-100), set on approval
+  refundAmount       Decimal? @db.Decimal(10, 2) // = totalPrice x pct/100, capped at paid total
+  reviewNote         String? // mandatory on reject, optional on approve
+  reviewedById       String?
+  reviewedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  booking  Booking @relation(fields: [bookingId], references: [id])
+  user     User    @relation("RefundRequests", fields: [userId], references: [id])
+  reviewer User?   @relation("RefundReviewer", fields: [reviewedById], references: [id])
+
+  @@index([bookingId])
+  @@index([userId])
+  @@index([status, createdAt])
+  @@map("refund_requests")
+}

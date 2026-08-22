@@ -5,6 +5,7 @@ import { BookingStatus, PaymentStatus } from "../generated/prisma/enums";
 import { AppError } from "../src/utils/appError";
 import {
   bearer,
+  createAdmin,
   createAgent,
   createBooking,
   createPackage,
@@ -165,7 +166,7 @@ describe("booking", () => {
     expect(res.body.message).toMatch(/after the travel date/i);
   });
 
-  it("refunds a settled payment on PAID → CANCELLED and flips it to REFUNDED", async () => {
+  it("refunds a settled payment when an ADMIN cancels a PAID booking (agency-initiated, 100%)", async () => {
     sslcommerzRefund.mockResolvedValueOnce({
       APIConnect: "DONE",
       status: "success",
@@ -173,10 +174,11 @@ describe("booking", () => {
     });
 
     const user = await createUser();
+    const admin = await createAdmin();
     const booking = await createBooking({ userId: user.id, status: BookingStatus.PAID });
     const payment = await createPayment(booking.id, { status: PaymentStatus.SUCCESS });
 
-    const { accessToken } = await loginAs(user);
+    const { accessToken } = await loginAs(admin);
     const res = await cancel(booking.id, accessToken);
 
     expect(res.status).toBe(200);
@@ -190,16 +192,45 @@ describe("booking", () => {
     expect(row?.refundCompletedAt).toBeTruthy();
   });
 
+  it("blocks a CUSTOMER from cancelling a PAID booking (must apply for a refund instead)", async () => {
+    sslcommerzRefund.mockClear();
+
+    const user = await createUser();
+    const booking = await createBooking({ userId: user.id, status: BookingStatus.PAID });
+    await createPayment(booking.id, { status: PaymentStatus.SUCCESS });
+
+    const { accessToken } = await loginAs(user);
+    const res = await cancel(booking.id, accessToken);
+
+    expect(res.status).toBe(403);
+
+    const fresh = await prisma.booking.findUnique({ where: { id: booking.id } });
+    expect(fresh?.status).toBe(BookingStatus.PAID);
+    expect(sslcommerzRefund).not.toHaveBeenCalled();
+  });
+
+  it("still lets a customer cancel their own unpaid PENDING booking (free cancel)", async () => {
+    const user = await createUser();
+    const booking = await createBooking({ userId: user.id, status: BookingStatus.PENDING });
+
+    const { accessToken } = await loginAs(user);
+    const res = await cancel(booking.id, accessToken);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe(BookingStatus.CANCELLED);
+  });
+
   it("keeps the payment SUCCESS (money-safe) when the gateway refund fails", async () => {
     sslcommerzRefund.mockRejectedValueOnce(
       new AppError(502, "SSLCommerz refund rejected: Invalid Request"),
     );
 
     const user = await createUser();
+    const admin = await createAdmin();
     const booking = await createBooking({ userId: user.id, status: BookingStatus.PAID });
     const payment = await createPayment(booking.id, { status: PaymentStatus.SUCCESS });
 
-    const { accessToken } = await loginAs(user);
+    const { accessToken } = await loginAs(admin);
     const res = await cancel(booking.id, accessToken);
 
     expect(res.status).toBe(200);
@@ -213,9 +244,10 @@ describe("booking", () => {
 
   it("cancelling a booking with no settled payments carries no refund key", async () => {
     const user = await createUser();
+    const admin = await createAdmin();
     const booking = await createBooking({ userId: user.id, status: BookingStatus.PAID });
 
-    const { accessToken } = await loginAs(user);
+    const { accessToken } = await loginAs(admin);
     const res = await cancel(booking.id, accessToken);
 
     expect(res.status).toBe(200);

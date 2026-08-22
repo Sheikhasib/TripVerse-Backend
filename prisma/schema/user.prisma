@@ -24,6 +24,8 @@ model User {
   notifications Notification[]
   comments      BlogComment[] @relation("UserComments")
   refreshTokens RefreshToken[]
+  refundRequests   RefundRequest[] @relation("RefundRequests")
+  refundsReviewed  RefundRequest[] @relation("RefundReviewer")
 
   @@index([role])
   @@index([status])

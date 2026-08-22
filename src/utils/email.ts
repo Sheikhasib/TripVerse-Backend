@@ -299,3 +299,131 @@ export const sendRefundEmail = async (
     emailLayout(content),
   );
 };
+
+// ── Refund application emails ──────────────────────────────────────────────
+export interface IRefundReceivedEmailDetails {
+  email: string;
+  name: string;
+  packageTitle: string;
+  travelDate: Date;
+  category: string;
+}
+
+// Acknowledges a refund application. Best-effort like the other emails.
+export const sendRefundReceivedEmail = async (
+  details: IRefundReceivedEmailDetails,
+): Promise<void> => {
+  const client = getResend();
+  if (!client || !details.email) {
+    console.warn("[email] Resend not configured; skipping refund received email.");
+    return;
+  }
+
+  const travelDate = details.travelDate.toISOString().slice(0, 10);
+  const categoryLabel = details.category.replace(/_/g, " ").toLowerCase();
+
+  const content = `
+    <h2 style="margin-top: 0; font-size: 18px;">Refund application received</h2>
+    <p style="font-size: 14px; line-height: 1.6; color: #374151;">
+      Hi ${escapeHtml(details.name)},<br/>
+      We&apos;ve received your refund application for
+      <strong>&ldquo;${escapeHtml(details.packageTitle)}&rdquo;</strong>
+      (${escapeHtml(categoryLabel)}). Our team will review the facts and get
+      back to you within <strong>5 business days</strong>.
+    </p>
+    <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280; width: 120px;">Package</td>
+        <td style="padding: 8px 0;"><strong>${escapeHtml(details.packageTitle)}</strong></td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Travel date</td>
+        <td style="padding: 8px 0;">${escapeHtml(travelDate)}</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Reason category</td>
+        <td style="padding: 8px 0;">${escapeHtml(categoryLabel)}</td>
+      </tr>
+    </table>
+    <p style="font-size: 13px; line-height: 1.6; color: #6b7280; margin-top: 16px;">
+      Your refund percentage is locked in as of this submission, so applying
+      early always protects your bracket.
+    </p>
+  `;
+
+  await sendWithLog(
+    client,
+    "We received your refund application - TripVerse",
+    [details.email],
+    emailLayout(content),
+  );
+};
+
+export interface IRefundDecisionEmailDetails {
+  email: string;
+  name: string;
+  packageTitle: string;
+  approved: boolean;
+  amount?: number;
+  percentage?: number;
+  reviewNote?: string | null;
+}
+
+// Informs the customer about an admin's approve/reject decision.
+// Best-effort like the other emails.
+export const sendRefundDecisionEmail = async (
+  details: IRefundDecisionEmailDetails,
+): Promise<void> => {
+  const client = getResend();
+  if (!client || !details.email) {
+    console.warn("[email] Resend not configured; skipping refund decision email.");
+    return;
+  }
+
+  const heading = details.approved ? "Refund approved" : "Refund application rejected";
+
+  const body = details.approved
+    ? `Good news — your refund application for
+      <strong>&ldquo;${escapeHtml(details.packageTitle)}&rdquo;</strong> has been
+      <strong>approved</strong>${
+        typeof details.amount === "number"
+          ? ` for <strong>&#2547;${escapeHtml(details.amount.toFixed(2))}</strong>`
+          : ""
+      }. The amount will be returned to your original payment method
+      within up to 14 business days.`
+    : `After reviewing the facts, we are unable to approve your refund
+      application for <strong>&ldquo;${escapeHtml(
+        details.packageTitle,
+      )}&rdquo;</strong>. You may re-apply once with new or corrected evidence
+      if you believe this decision was made in error.`;
+
+  const content = `
+    <h2 style="margin-top: 0; font-size: 18px;">${heading}</h2>
+    <p style="font-size: 14px; line-height: 1.6; color: #374151;">
+      Hi ${escapeHtml(details.name)},<br/>
+      ${body}
+    </p>
+    ${
+      typeof details.percentage === "number" && details.approved
+        ? `<p style="font-size: 14px; color: #374151;">Approved rate: <strong>${escapeHtml(
+            String(details.percentage),
+          )}%</strong></p>`
+        : ""
+    }
+    ${
+      details.reviewNote
+        ? `<div style="margin-top: 16px; padding: 16px; background: #f9fafb; border-radius: 6px; white-space: pre-wrap;"><strong>Note from our team:</strong><br/>${escapeHtml(details.reviewNote)}</div>`
+        : ""
+    }
+    <p style="font-size: 13px; line-height: 1.6; color: #6b7280; margin-top: 16px;">
+      Questions? Reply to this email or reach us via the Contact page with your booking ID.
+    </p>
+  `;
+
+  await sendWithLog(
+    client,
+    `${heading} - TripVerse`,
+    [details.email],
+    emailLayout(content),
+  );
+};

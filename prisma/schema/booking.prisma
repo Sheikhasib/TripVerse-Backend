@@ -13,7 +13,8 @@ model Booking {
 
   user     User         @relation("CustomerBookings", fields: [userId], references: [id])
   package  TourPackage  @relation(fields: [packageId], references: [id])
-  payments Payment[]
+  payments      Payment[]
+  refundRequests RefundRequest[]
 
   @@index([userId])
   @@index([packageId])

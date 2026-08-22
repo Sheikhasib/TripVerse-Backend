@@ -47,7 +47,7 @@ enum RefundRequestStatus {
 model RefundRequest {
   id        String @id @default(uuid())
 
-  bookingId String @unique
+  bookingId String
   userId    String
 
   category     RefundReasonCategory
@@ -81,10 +81,9 @@ model RefundRequest {
 Plus `NotificationType` gains `REFUND_REQUESTED | REFUND_APPROVED | REFUND_REJECTED`.
 Apply with `npx prisma migrate dev --name add_refund_requests`.
 
-> `bookingId @unique` enforces one *live* application; the "re-apply once after rejection"
-> rule cannot live in a unique constraint (a rejected row would block forever), so it is
-> service-enforced: creating a new request requires the previous one to be REJECTED and
-> rejects-count < 2. On re-application the old REJECTED row stays for audit.
+> `bookingId` is indexed, not unique: rejected rows stay for audit, so a DB constraint
+> would block re-application forever. The "one live application + max 2 lifetime" rule is
+> service-enforced on create.
 
 ## State machine change — `booking.service.ts`
 

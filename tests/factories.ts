@@ -9,6 +9,8 @@ import {
   PackageStatus,
   PaymentStatus,
   PostStatus,
+  RefundReasonCategory,
+  RefundRequestStatus,
   Role,
   UserStatus,
 } from "../generated/prisma/enums";
@@ -18,6 +20,7 @@ import {
   registerContact,
   registerPackage,
   registerPost,
+  registerRefundRequest,
   registerUser,
 } from "./setup";
 
@@ -185,6 +188,48 @@ export async function createPayment(
       refundCompletedAt: overrides.refundCompletedAt ?? null,
     },
   });
+}
+
+// ── Refund requests ────────────────────────────────────────────────────────
+export async function createRefundRequest(
+  bookingId: string,
+  overrides: Partial<{
+    userId: string;
+    category: RefundReasonCategory;
+    reason: string;
+    evidenceUrl: string | null;
+    daysBeforeTravel: number;
+    suggestedPercentage: number;
+    status: RefundRequestStatus;
+    approvedPercentage: number | null;
+    refundAmount: number | null;
+    reviewNote: string | null;
+    reviewedById: string | null;
+  }> = {},
+) {
+  const refundRequest = await prisma.refundRequest.create({
+    data: {
+      bookingId,
+      userId:
+        overrides.userId ??
+        (await prisma.booking.findUniqueOrThrow({
+          where: { id: bookingId },
+          select: { userId: true },
+        })).userId,
+      category: overrides.category ?? RefundReasonCategory.CHANGE_OF_PLANS,
+      reason: overrides.reason ?? "My travel plans have changed unexpectedly.",
+      evidenceUrl: overrides.evidenceUrl ?? null,
+      daysBeforeTravel: overrides.daysBeforeTravel ?? 40,
+      suggestedPercentage: overrides.suggestedPercentage ?? 90,
+      status: overrides.status ?? RefundRequestStatus.PENDING,
+      approvedPercentage: overrides.approvedPercentage ?? null,
+      refundAmount: overrides.refundAmount ?? null,
+      reviewNote: overrides.reviewNote ?? null,
+      reviewedById: overrides.reviewedById ?? null,
+    },
+  });
+  registerRefundRequest(refundRequest.id);
+  return refundRequest;
 }
 
 // ── Wishlist / notification ────────────────────────────────────────────────

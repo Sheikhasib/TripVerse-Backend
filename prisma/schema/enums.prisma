@@ -36,6 +36,21 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum RefundReasonCategory {
+  MEDICAL_EMERGENCY
+  BEREAVEMENT
+  VISA_REJECTION
+  FORCE_MAJEURE
+  CHANGE_OF_PLANS
+}
+
+enum RefundRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REFUNDED
+}
+
 enum PostStatus {
   DRAFT
   PUBLISHED
@@ -47,4 +62,7 @@ enum NotificationType {
   BOOKING_CANCELLED
   PACKAGE_APPROVED
   PACKAGE_REJECTED
+  REFUND_REQUESTED
+  REFUND_APPROVED
+  REFUND_REJECTED
 }

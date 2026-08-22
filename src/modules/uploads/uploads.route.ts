@@ -24,7 +24,8 @@ const router = Router();
 
 router.post(
   "/image",
-  auth(Role.AGENT, Role.ADMIN),
+  // USER included so customers can attach refund evidence (spec 26)
+  auth(Role.USER, Role.AGENT, Role.ADMIN),
   upload.single("image"),
   uploadsController.uploadImage,
 );

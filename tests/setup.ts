@@ -35,6 +35,7 @@ const categoryIds: string[] = [];
 const bookingIds: string[] = [];
 const postIds: string[] = [];
 const contactIds: string[] = [];
+const refundRequestIds: string[] = [];
 
 export const registerUser = (id: string) => userIds.push(id);
 export const registerPackage = (id: string) => packageIds.push(id);
@@ -42,6 +43,7 @@ export const registerCategory = (id: string) => categoryIds.push(id);
 export const registerBooking = (id: string) => bookingIds.push(id);
 export const registerPost = (id: string) => postIds.push(id);
 export const registerContact = (id: string) => contactIds.push(id);
+export const registerRefundRequest = (id: string) => refundRequestIds.push(id);
 
 export const createdIds = {
   get userIds() {
@@ -58,6 +60,19 @@ export const cleanupCreated = async () => {
   const pkgIn = packageIds.length ? { in: packageIds } : undefined;
   const bookingIn = bookingIds.length ? { in: bookingIds } : undefined;
   const postIn = postIds.length ? { in: postIds } : undefined;
+
+  // refund requests reference bookings and users (as requester or reviewer) —
+  // delete them before any of those parents
+  const refundWhere = {
+    OR: [
+      ...(refundRequestIds.length ? [{ id: { in: refundRequestIds } }] : []),
+      ...(userIn ? [{ userId: userIn }, { reviewedById: userIn }] : []),
+      ...(bookingIn ? [{ bookingId: bookingIn }] : []),
+    ],
+  };
+  if (refundWhere.OR.length) {
+    await db.refundRequest.deleteMany({ where: refundWhere });
+  }
 
   if (bookingIn) {
     await db.payment.deleteMany({ where: { bookingId: bookingIn } });

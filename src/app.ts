@@ -21,6 +21,7 @@ import { dashboardRoutes } from "./modules/dashboard/dashboard.route";
 import { paymentRoutes } from "./modules/payment/payment.route";
 import { wishlistRoutes } from "./modules/wishlist/wishlist.route";
 import { notificationRoutes } from "./modules/notification/notification.route";
+import { refundRoutes } from "./modules/refund/refund.route";
 
 const app: Application = express();
 
@@ -141,6 +142,7 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/refunds", refundRoutes);
 
 app.use(notFoundHandler);
 app.use(globalErrorHandler);

@@ -479,6 +479,19 @@ var PaymentStatus = {
   CANCELLED: "CANCELLED",
   REFUNDED: "REFUNDED"
 };
+var RefundReasonCategory = {
+  MEDICAL_EMERGENCY: "MEDICAL_EMERGENCY",
+  BEREAVEMENT: "BEREAVEMENT",
+  VISA_REJECTION: "VISA_REJECTION",
+  FORCE_MAJEURE: "FORCE_MAJEURE",
+  CHANGE_OF_PLANS: "CHANGE_OF_PLANS"
+};
+var RefundRequestStatus = {
+  PENDING: "PENDING",
+  APPROVED: "APPROVED",
+  REJECTED: "REJECTED",
+  REFUNDED: "REFUNDED"
+};
 var PostStatus = {
   DRAFT: "DRAFT",
   PUBLISHED: "PUBLISHED"
@@ -1981,7 +1994,8 @@ var upload = multer2({
 var router3 = Router3();
 router3.post(
   "/image",
-  auth_default(Role.AGENT, Role.ADMIN),
+  // USER included so customers can attach refund evidence (spec 26)
+  auth_default(Role.USER, Role.AGENT, Role.ADMIN),
   upload.single("image"),
   uploadsController.uploadImage
 );
@@ -2202,6 +2216,85 @@ var sendRefundEmail = async (details) => {
   await sendWithLog(
     client,
     "Booking cancelled & refund issued - TripVerse",
+    [details.email],
+    emailLayout(content)
+  );
+};
+var sendRefundReceivedEmail = async (details) => {
+  const client = getResend2();
+  if (!client || !details.email) {
+    console.warn("[email] Resend not configured; skipping refund received email.");
+    return;
+  }
+  const travelDate = details.travelDate.toISOString().slice(0, 10);
+  const categoryLabel = details.category.replace(/_/g, " ").toLowerCase();
+  const content = `
+    <h2 style="margin-top: 0; font-size: 18px;">Refund application received</h2>
+    <p style="font-size: 14px; line-height: 1.6; color: #374151;">
+      Hi ${escapeHtml(details.name)},<br/>
+      We&apos;ve received your refund application for
+      <strong>&ldquo;${escapeHtml(details.packageTitle)}&rdquo;</strong>
+      (${escapeHtml(categoryLabel)}). Our team will review the facts and get
+      back to you within <strong>5 business days</strong>.
+    </p>
+    <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280; width: 120px;">Package</td>
+        <td style="padding: 8px 0;"><strong>${escapeHtml(details.packageTitle)}</strong></td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Travel date</td>
+        <td style="padding: 8px 0;">${escapeHtml(travelDate)}</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0; color: #6b7280;">Reason category</td>
+        <td style="padding: 8px 0;">${escapeHtml(categoryLabel)}</td>
+      </tr>
+    </table>
+    <p style="font-size: 13px; line-height: 1.6; color: #6b7280; margin-top: 16px;">
+      Your refund percentage is locked in as of this submission, so applying
+      early always protects your bracket.
+    </p>
+  `;
+  await sendWithLog(
+    client,
+    "We received your refund application - TripVerse",
+    [details.email],
+    emailLayout(content)
+  );
+};
+var sendRefundDecisionEmail = async (details) => {
+  const client = getResend2();
+  if (!client || !details.email) {
+    console.warn("[email] Resend not configured; skipping refund decision email.");
+    return;
+  }
+  const heading = details.approved ? "Refund approved" : "Refund application rejected";
+  const body = details.approved ? `Good news \u2014 your refund application for
+      <strong>&ldquo;${escapeHtml(details.packageTitle)}&rdquo;</strong> has been
+      <strong>approved</strong>${typeof details.amount === "number" ? ` for <strong>&#2547;${escapeHtml(details.amount.toFixed(2))}</strong>` : ""}. The amount will be returned to your original payment method
+      within up to 14 business days.` : `After reviewing the facts, we are unable to approve your refund
+      application for <strong>&ldquo;${escapeHtml(
+    details.packageTitle
+  )}&rdquo;</strong>. You may re-apply once with new or corrected evidence
+      if you believe this decision was made in error.`;
+  const content = `
+    <h2 style="margin-top: 0; font-size: 18px;">${heading}</h2>
+    <p style="font-size: 14px; line-height: 1.6; color: #374151;">
+      Hi ${escapeHtml(details.name)},<br/>
+      ${body}
+    </p>
+    ${typeof details.percentage === "number" && details.approved ? `<p style="font-size: 14px; color: #374151;">Approved rate: <strong>${escapeHtml(
+    String(details.percentage)
+  )}%</strong></p>` : ""}
+    ${details.reviewNote ? `<div style="margin-top: 16px; padding: 16px; background: #f9fafb; border-radius: 6px; white-space: pre-wrap;"><strong>Note from our team:</strong><br/>${escapeHtml(details.reviewNote)}</div>` : ""}
+    <p style="font-size: 13px; line-height: 1.6; color: #6b7280; margin-top: 16px;">
+      Questions? Reply to this email or reach us via the Contact page with your booking ID.
+    </p>
+  `;
+  await sendWithLog(
+    client,
+    `${heading} - TripVerse`,
     [details.email],
     emailLayout(content)
   );
@@ -5656,6 +5749,545 @@ router13.patch(
 );
 var notificationRoutes = router13;
 
+// src/modules/refund/refund.route.ts
+import { Router as Router14 } from "express";
+
+// src/modules/refund/refund.controller.ts
+import httpStatus16 from "http-status";
+
+// src/modules/refund/refund.service.ts
+var DOCS_BACKED_CATEGORIES = [
+  RefundReasonCategory.MEDICAL_EMERGENCY,
+  RefundReasonCategory.BEREAVEMENT,
+  RefundReasonCategory.VISA_REJECTION,
+  RefundReasonCategory.FORCE_MAJEURE
+];
+var MAX_APPLICATIONS = 2;
+var suggestRefundPercentage = (category, daysBeforeTravel) => {
+  if (DOCS_BACKED_CATEGORIES.includes(category)) return 100;
+  if (daysBeforeTravel >= 30) return 90;
+  if (daysBeforeTravel >= 15) return 50;
+  if (daysBeforeTravel >= 7) return 25;
+  return 0;
+};
+var toUTCMidnight2 = (date) => new Date(
+  Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+);
+var daysUntilTravel = (travelDate) => {
+  const DAY_MS = 24 * 60 * 60 * 1e3;
+  const today = toUTCMidnight2(/* @__PURE__ */ new Date()).getTime();
+  const travelDay = toUTCMidnight2(travelDate).getTime();
+  return Math.floor((travelDay - today) / DAY_MS);
+};
+var canView = (request, actor) => request.userId === actor.id || actor.role === Role.ADMIN;
+var refundPackageSelect = {
+  select: { id: true, title: true, slug: true, location: true, images: true }
+};
+var refundUserSelect = {
+  select: { id: true, name: true, email: true }
+};
+var mapRefundRequest = (request) => {
+  if (!request) return null;
+  const { refundAmount, ...rest } = request;
+  return {
+    ...rest,
+    refundAmount: refundAmount === null ? null : Number(refundAmount),
+    booking: {
+      ...request.booking,
+      totalPrice: Number(request.booking.totalPrice)
+    }
+  };
+};
+var createRefundRequest = async (userId, payload) => {
+  const booking = await prisma.booking.findUnique({
+    where: { id: payload.bookingId },
+    include: { package: { select: { title: true } }, user: refundUserSelect }
+  });
+  if (!booking || booking.userId !== userId) {
+    throw new AppError(404, "Booking not found.");
+  }
+  if (booking.status !== BookingStatus.PAID && booking.status !== BookingStatus.CONFIRMED) {
+    throw new AppError(
+      400,
+      "Refunds can only be requested for paid bookings."
+    );
+  }
+  const latest = await prisma.refundRequest.findFirst({
+    where: { bookingId: booking.id },
+    orderBy: { createdAt: "desc" }
+  });
+  if (latest && latest.status !== RefundRequestStatus.REJECTED) {
+    throw new AppError(
+      409,
+      "A refund application already exists for this booking."
+    );
+  }
+  const rejectedCount = await prisma.refundRequest.count({
+    where: {
+      bookingId: booking.id,
+      status: RefundRequestStatus.REJECTED
+    }
+  });
+  if (rejectedCount >= MAX_APPLICATIONS) {
+    throw new AppError(
+      409,
+      "The refund application limit has been reached for this booking."
+    );
+  }
+  const daysBeforeTravel = daysUntilTravel(booking.travelDate);
+  const suggestedPercentage = suggestRefundPercentage(
+    payload.category,
+    daysBeforeTravel
+  );
+  const created = await prisma.refundRequest.create({
+    data: {
+      bookingId: booking.id,
+      userId,
+      category: payload.category,
+      reason: payload.reason,
+      evidenceUrl: payload.evidenceUrl ?? null,
+      daysBeforeTravel,
+      suggestedPercentage
+    },
+    include: {
+      booking: { include: { package: refundPackageSelect } },
+      user: refundUserSelect,
+      reviewer: refundUserSelect
+    }
+  });
+  runInBackground([
+    sendRefundReceivedEmail({
+      email: booking.user.email,
+      name: booking.user.name,
+      packageTitle: booking.package.title,
+      travelDate: booking.travelDate,
+      category: payload.category
+    }),
+    notify(
+      userId,
+      NotificationType.REFUND_REQUESTED,
+      "Refund application received",
+      `Your refund application for "${booking.package.title}" is under review. We'll update you within 5 business days.`,
+      `/dashboard/bookings/${booking.id}`
+    )
+  ]);
+  return mapRefundRequest(created);
+};
+var refundInclude = {
+  booking: { include: { package: refundPackageSelect } },
+  user: refundUserSelect,
+  reviewer: refundUserSelect
+};
+var paginateRefunds = async (where, query) => {
+  const page = query.page || 1;
+  const limit = query.limit || 10;
+  const [data, total] = await Promise.all([
+    prisma.refundRequest.findMany({
+      where,
+      include: refundInclude,
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: { createdAt: "desc" }
+    }),
+    prisma.refundRequest.count({ where })
+  ]);
+  return {
+    data,
+    meta: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit)
+    }
+  };
+};
+var getMyRefundRequests = async (userId, query) => {
+  const where = { userId };
+  if (query.status) where.status = query.status;
+  const result = await paginateRefunds(where, query);
+  return { ...result, data: result.data.map(mapRefundRequest) };
+};
+var getAllRefundRequests = async (query) => {
+  const where = {};
+  if (query.status) where.status = query.status;
+  const result = await paginateRefunds(where, query);
+  return { ...result, data: result.data.map(mapRefundRequest) };
+};
+var getRefundRequestDetail = async (id, actor) => {
+  const request = await prisma.refundRequest.findUnique({
+    where: { id },
+    include: refundInclude
+  });
+  if (!request) {
+    throw new AppError(404, "Refund request not found.");
+  }
+  if (!canView(request, actor)) {
+    throw new AppError(403, "You are not authorized to view this refund request.");
+  }
+  return mapRefundRequest(request);
+};
+var decideRefundRequest = async (id, payload, admin) => {
+  const request = await prisma.refundRequest.findUnique({
+    where: { id },
+    include: {
+      booking: {
+        include: { package: { select: { title: true } }, user: refundUserSelect }
+      }
+    }
+  });
+  if (!request) {
+    throw new AppError(404, "Refund request not found.");
+  }
+  if (payload.action === "REJECT") {
+    const flipped = await prisma.refundRequest.updateMany({
+      where: { id: request.id, status: RefundRequestStatus.PENDING },
+      data: {
+        status: RefundRequestStatus.REJECTED,
+        reviewNote: payload.reviewNote,
+        reviewedById: admin.id,
+        reviewedAt: /* @__PURE__ */ new Date()
+      }
+    });
+    if (flipped.count === 0) {
+      throw new AppError(409, "This refund request has already been decided.");
+    }
+    runInBackground([
+      sendRefundDecisionEmail({
+        email: request.booking.user.email,
+        name: request.booking.user.name,
+        packageTitle: request.booking.package.title,
+        approved: false,
+        reviewNote: payload.reviewNote
+      }),
+      notify(
+        request.userId,
+        NotificationType.REFUND_REJECTED,
+        "Refund application rejected",
+        payload.reviewNote,
+        `/dashboard/bookings/${request.bookingId}`
+      )
+    ]);
+    const fresh2 = await prisma.refundRequest.findUnique({
+      where: { id: request.id },
+      include: refundInclude
+    });
+    return { refundRequest: mapRefundRequest(fresh2) };
+  }
+  let percentage = payload.approvedPercentage ?? request.suggestedPercentage;
+  if (request.category === RefundReasonCategory.CHANGE_OF_PLANS) {
+    percentage = Math.min(percentage, request.suggestedPercentage);
+  }
+  percentage = Math.max(0, Math.min(100, percentage));
+  const settledPayments = await prisma.payment.findMany({
+    where: {
+      bookingId: request.bookingId,
+      status: PaymentStatus.SUCCESS,
+      refundCompletedAt: null
+    },
+    orderBy: { createdAt: "asc" }
+  });
+  const paidTotal = settledPayments.reduce(
+    (sum, p) => sum + Number(p.amount),
+    0
+  );
+  const amount = Math.min(
+    Math.round(Number(request.booking.totalPrice) * (percentage / 100)),
+    paidTotal
+  );
+  const approved = await prisma.$transaction(async (tx) => {
+    const requestFlip = await tx.refundRequest.updateMany({
+      where: { id: request.id, status: RefundRequestStatus.PENDING },
+      data: {
+        status: RefundRequestStatus.APPROVED,
+        approvedPercentage: percentage,
+        refundAmount: amount,
+        reviewNote: payload.reviewNote ?? null,
+        reviewedById: admin.id,
+        reviewedAt: /* @__PURE__ */ new Date()
+      }
+    });
+    if (requestFlip.count === 0) {
+      throw new AppError(409, "This refund request has already been decided.");
+    }
+    const bookingFlip = await tx.booking.updateMany({
+      where: {
+        id: request.bookingId,
+        status: { in: [BookingStatus.PAID, BookingStatus.CONFIRMED] }
+      },
+      data: { status: BookingStatus.CANCELLED }
+    });
+    if (bookingFlip.count === 0) {
+      throw new AppError(409, "The booking is no longer active.");
+    }
+    await tx.payment.updateMany({
+      where: { bookingId: request.bookingId, status: PaymentStatus.INITIATED },
+      data: { status: PaymentStatus.CANCELLED }
+    });
+    return true;
+  });
+  let remaining = amount;
+  let refundedTotal = 0;
+  let firstFailure = null;
+  const refundRefs = [];
+  for (const payment of settledPayments) {
+    if (remaining <= 0) break;
+    const slice = Math.min(remaining, Number(payment.amount));
+    if (!payment.bankTranId) {
+      firstFailure ??= "Payment has no bank transaction id to refund against.";
+      await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: { refundInitiatedAt: /* @__PURE__ */ new Date() }
+      });
+      continue;
+    }
+    try {
+      const gateway = await sslcommerzRefund({
+        bank_tran_id: payment.bankTranId,
+        refund_amount: slice,
+        refund_remarks: `Refund request ${request.id} - TripVerse`,
+        refe_id: request.id
+      });
+      const flippedPayment = await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: {
+          status: PaymentStatus.REFUNDED,
+          refundRefId: gateway.refund_ref_id ?? payment.refundRefId ?? null,
+          refundCompletedAt: /* @__PURE__ */ new Date()
+        }
+      });
+      if (flippedPayment.count === 0) continue;
+      refundedTotal += slice;
+      remaining -= slice;
+      if (gateway.refund_ref_id) refundRefs.push(gateway.refund_ref_id);
+    } catch (error) {
+      firstFailure ??= error instanceof Error ? error.message : String(error);
+      await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: { refundInitiatedAt: /* @__PURE__ */ new Date() }
+      });
+    }
+  }
+  const payout = !firstFailure && remaining <= 0 ? { status: "SUCCESS", refundedTotal } : { status: "FAILED", message: firstFailure ?? "Payout could not be completed." };
+  if (payout.status === "SUCCESS") {
+    await prisma.refundRequest.updateMany({
+      where: { id: request.id, status: RefundRequestStatus.APPROVED },
+      data: { status: RefundRequestStatus.REFUNDED }
+    });
+  }
+  runInBackground([
+    sendRefundDecisionEmail({
+      email: request.booking.user.email,
+      name: request.booking.user.name,
+      packageTitle: request.booking.package.title,
+      approved: true,
+      amount,
+      percentage,
+      reviewNote: payload.reviewNote
+    }),
+    ...payout.status === "SUCCESS" && refundRefs.length > 0 ? [
+      sendRefundEmail({
+        email: request.booking.user.email,
+        name: request.booking.user.name,
+        packageTitle: request.booking.package.title,
+        travelDate: request.booking.travelDate,
+        amount: refundedTotal,
+        refundRefId: refundRefs[0]
+      })
+    ] : [],
+    notify(
+      request.userId,
+      NotificationType.REFUND_APPROVED,
+      "Refund approved",
+      `Your refund of \u09F3${amount.toFixed(2)} for "${request.booking.package.title}" was approved.`,
+      `/dashboard/bookings/${request.bookingId}`
+    )
+  ]);
+  const fresh = await prisma.refundRequest.findUnique({
+    where: { id: request.id },
+    include: refundInclude
+  });
+  return { refundRequest: mapRefundRequest(fresh), payout };
+};
+var refundService = {
+  suggestRefundPercentage,
+  createRefundRequest,
+  getMyRefundRequests,
+  getAllRefundRequests,
+  getRefundRequestDetail,
+  decideRefundRequest
+};
+
+// src/modules/refund/refund.controller.ts
+var createRefundRequest2 = catchAsync(
+  async (req, res, next) => {
+    const userId = req.user?.id;
+    const refundRequest = await refundService.createRefundRequest(
+      userId,
+      req.body
+    );
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus16.CREATED,
+      message: "Refund application submitted successfully.",
+      data: refundRequest
+    });
+  }
+);
+var getMyRefundRequests2 = catchAsync(
+  async (req, res, next) => {
+    const userId = req.user?.id;
+    const result = await refundService.getMyRefundRequests(userId, req.query);
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus16.OK,
+      message: "Refund requests retrieved successfully.",
+      data: result.data,
+      meta: result.meta
+    });
+  }
+);
+var getRefundRequestDetail2 = catchAsync(
+  async (req, res, next) => {
+    const id = String(req.params.id);
+    const refundRequest = await refundService.getRefundRequestDetail(
+      id,
+      req.user
+    );
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus16.OK,
+      message: "Refund request retrieved successfully.",
+      data: refundRequest
+    });
+  }
+);
+var getAllRefundRequests2 = catchAsync(
+  async (req, res, next) => {
+    const result = await refundService.getAllRefundRequests(req.query);
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus16.OK,
+      message: "Refund requests retrieved successfully.",
+      data: result.data,
+      meta: result.meta
+    });
+  }
+);
+var decideRefundRequest2 = catchAsync(
+  async (req, res, next) => {
+    const id = String(req.params.id);
+    const result = await refundService.decideRefundRequest(
+      id,
+      req.body,
+      req.user
+    );
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus16.OK,
+      message: req.body.action === "APPROVE" ? "Refund request approved." : "Refund request rejected.",
+      data: result
+    });
+  }
+);
+var refundController = {
+  createRefundRequest: createRefundRequest2,
+  getMyRefundRequests: getMyRefundRequests2,
+  getRefundRequestDetail: getRefundRequestDetail2,
+  getAllRefundRequests: getAllRefundRequests2,
+  decideRefundRequest: decideRefundRequest2
+};
+
+// src/modules/refund/refund.validation.ts
+import { z as z15 } from "zod";
+var DOCS_BACKED_CATEGORIES2 = [
+  RefundReasonCategory.MEDICAL_EMERGENCY,
+  RefundReasonCategory.BEREAVEMENT,
+  RefundReasonCategory.VISA_REJECTION,
+  RefundReasonCategory.FORCE_MAJEURE
+];
+var createSchema3 = z15.object({
+  bookingId: z15.string({ required_error: "Booking id is required" }).min(1),
+  category: z15.nativeEnum(RefundReasonCategory, {
+    required_error: "Please choose a reason category"
+  }),
+  reason: z15.string({ required_error: "Please describe your reason" }).trim().min(20, "Please describe your reason in at least 20 characters").max(2e3, "Reason must be at most 2000 characters"),
+  evidenceUrl: z15.string().url("Evidence must be a valid URL").optional()
+}).superRefine((data, ctx) => {
+  if (DOCS_BACKED_CATEGORIES2.includes(data.category) && !data.evidenceUrl) {
+    ctx.addIssue({
+      code: z15.ZodIssueCode.custom,
+      path: ["evidenceUrl"],
+      message: "Supporting documents are required for this reason category."
+    });
+  }
+});
+var refundParamsSchema = z15.object({
+  id: z15.string({ required_error: "Refund request id is required" }).min(1)
+});
+var refundQuerySchema = z15.object({
+  page: z15.coerce.number().int().min(1).default(1),
+  limit: z15.coerce.number().int().min(1).max(50).default(10),
+  status: z15.nativeEnum(RefundRequestStatus).optional()
+});
+var decisionSchema = z15.object({
+  action: z15.enum(["APPROVE", "REJECT"], {
+    required_error: "Please provide a decision action"
+  }),
+  approvedPercentage: z15.coerce.number().int().min(0).max(100).optional(),
+  reviewNote: z15.string().trim().max(1e3).optional()
+}).superRefine((data, ctx) => {
+  if (data.action === "REJECT" && !data.reviewNote) {
+    ctx.addIssue({
+      code: z15.ZodIssueCode.custom,
+      path: ["reviewNote"],
+      message: "A review note is required when rejecting a refund request."
+    });
+  }
+});
+var refundValidations = {
+  createSchema: createSchema3,
+  refundParamsSchema,
+  refundQuerySchema,
+  decisionSchema
+};
+
+// src/modules/refund/refund.route.ts
+var router14 = Router14();
+router14.post(
+  "/",
+  auth_default(Role.USER),
+  validateRequest_default({ body: refundValidations.createSchema }),
+  refundController.createRefundRequest
+);
+router14.get(
+  "/mine",
+  auth_default(Role.USER),
+  validateRequest_default({ query: refundValidations.refundQuerySchema }),
+  refundController.getMyRefundRequests
+);
+router14.get(
+  "/",
+  auth_default(Role.ADMIN),
+  validateRequest_default({ query: refundValidations.refundQuerySchema }),
+  refundController.getAllRefundRequests
+);
+router14.get(
+  "/:id",
+  auth_default(),
+  validateRequest_default({ params: refundValidations.refundParamsSchema }),
+  refundController.getRefundRequestDetail
+);
+router14.patch(
+  "/:id/decision",
+  auth_default(Role.ADMIN),
+  validateRequest_default({
+    params: refundValidations.refundParamsSchema,
+    body: refundValidations.decisionSchema
+  }),
+  refundController.decideRefundRequest
+);
+var refundRoutes = router14;
+
 // src/app.ts
 var app = express();
 app.set("trust proxy", 1);
@@ -5752,6 +6384,7 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/refunds", refundRoutes);
 app.use(notFound_default);
 app.use(globalErrorHandler_default);
 var app_default = app;

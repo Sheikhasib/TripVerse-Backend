@@ -9,6 +9,7 @@ import {
 } from "../../../generated/prisma/enums";
 import { prisma } from "../../lib/prisma";
 import { AppError } from "../../utils/appError";
+import { runInBackground } from "../../utils/background";
 import { sslcommerzRefund } from "../../lib/sslcommerz";
 import {
   sendRefundDecisionEmail,
@@ -16,7 +17,6 @@ import {
   sendRefundReceivedEmail,
 } from "../../utils/email";
 import { notify } from "../../utils/notification";
-import { runInBackground } from "../../utils/background";
 import {
   ICreateRefundRequest,
   IDecideRefundRequest,
@@ -349,7 +349,23 @@ const decideRefundRequest = async (
 
   // One transaction, two CAS writes: the approval and the cancellation commit
   // together or not at all (e.g. an agency cancel racing in → 409 rollback).
+  // The request CAS runs first so a repeated decision reports itself accurately.
   const approved = await prisma.$transaction(async (tx) => {
+    const requestFlip = await tx.refundRequest.updateMany({
+      where: { id: request.id, status: RefundRequestStatus.PENDING },
+      data: {
+        status: RefundRequestStatus.APPROVED,
+        approvedPercentage: percentage,
+        refundAmount: amount,
+        reviewNote: payload.reviewNote ?? null,
+        reviewedById: admin.id,
+        reviewedAt: new Date(),
+      },
+    });
+    if (requestFlip.count === 0) {
+      throw new AppError(409, "This refund request has already been decided.");
+    }
+
     const bookingFlip = await tx.booking.updateMany({
       where: {
         id: request.bookingId,
@@ -367,21 +383,6 @@ const decideRefundRequest = async (
       where: { bookingId: request.bookingId, status: PaymentStatus.INITIATED },
       data: { status: PaymentStatus.CANCELLED },
     });
-
-    const requestFlip = await tx.refundRequest.updateMany({
-      where: { id: request.id, status: RefundRequestStatus.PENDING },
-      data: {
-        status: RefundRequestStatus.APPROVED,
-        approvedPercentage: percentage,
-        refundAmount: amount,
-        reviewNote: payload.reviewNote ?? null,
-        reviewedById: admin.id,
-        reviewedAt: new Date(),
-      },
-    });
-    if (requestFlip.count === 0) {
-      throw new AppError(409, "This refund request has already been decided.");
-    }
 
     return true;
   });
