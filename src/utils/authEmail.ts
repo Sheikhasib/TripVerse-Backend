@@ -11,9 +11,13 @@ import { renderTemplate } from "../templates";
 // `runInBackground([sendX(...)])` so the runtime stays alive until the send
 // settles (see utils/background.ts).
 //
-// Delivery path is environment-aware: Vercel serverless blocks outbound SMTP
-// ports (465/587), so production sends go straight to the Resend HTTP API;
-// local/dev tries Gmail SMTP first and only falls back to Resend.
+// Delivery path: Gmail SMTP first (works locally AND on Vercel — measured
+// 465/587 connect fine from iad1; only port 25 is blocked there), with the
+// Resend HTTP API as fallback when SMTP is unconfigured or fails.
+//
+// OTP call sites await these helpers inside the request: serverless pauses
+// post-response background work, which silently dropped fire-and-forget
+// sends (the original production bug).
 
 const OTP_EXPIRATION_MINUTES = 5;
 
@@ -45,9 +49,7 @@ async function sendAuthMail(
     return;
   }
 
-  // SMTP is only attempted where outbound SMTP is actually reachable —
-  // Vercel serverless blackholes ports 465/587, so production skips it.
-  if (transporter && !config.is_production) {
+  if (transporter) {
     try {
       await transporter.sendMail({
         from: config.smtp_user as string,

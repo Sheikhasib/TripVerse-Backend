@@ -682,8 +682,8 @@ var transporter = config_default.smtp_user && config_default.smtp_password ? nod
     user: config_default.smtp_user,
     pass: config_default.smtp_password
   },
-  // Fail fast — on hosts that blackhole SMTP (e.g. Vercel) the default
-  // is to hang for minutes before erroring.
+  // Fail fast on network hiccups/cold starts instead of hanging for
+  // the default minutes before erroring.
   connectionTimeout: 1e4,
   greetingTimeout: 1e4,
   socketTimeout: 15e3
@@ -724,7 +724,7 @@ async function sendAuthMail(to, subject, build) {
     console.warn(`[email] failed to render "${subject}" template: ${detail}`);
     return;
   }
-  if (transporter && !config_default.is_production) {
+  if (transporter) {
     try {
       await transporter.sendMail({
         from: config_default.smtp_user,
