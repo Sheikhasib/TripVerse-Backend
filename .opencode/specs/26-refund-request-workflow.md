@@ -193,6 +193,13 @@ payout failed:
 4. ⚠️ spec-23 caveat applies: a "failed" attempt may still be PROCESSING gateway-side —
    confirm with the gateway/bank before retrying soon after a failure (admin tool).
 5. Success fires best-effort `sendRefundEmail` + "Refund paid out" notification.
+6. Concurrency: a compare-and-set on the request row (`status = APPROVED AND updatedAt =
+   <read>`, no-op write bumps `@updatedAt`) rejects simultaneous retries with 409 — chosen
+   over `SELECT … FOR UPDATE` because holding an interactive transaction across the gateway
+   HTTP calls risks timeout-mid-payout rollbacks of already-charged refunds. **Residual**:
+   a staggered retry (starting after the claim but before the payout finishes) can still
+   double-call the gateway; the per-payment CAS keeps the ledger consistent, and admins
+   should confirm gateway state before rapid re-retries.
 
 ### Decision rules — REJECT
 

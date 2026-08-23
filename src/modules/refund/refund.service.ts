@@ -618,6 +618,32 @@ const retryRefundPayout = async (
     throw new AppError(409, "This approval recorded no payout amount.");
   }
 
+  // Serialize simultaneous retries (double-click, double-tab): compare-and-set
+  // on the row's updatedAt — a concurrent attempt moving it first turns this
+  // into count 0. Deliberately NOT SELECT … FOR UPDATE: that would hold an
+  // interactive transaction open across the gateway HTTP calls (5s default
+  // timeout rolls back ledger flips the gateway already charged; pool
+  // pressure) — worse failure modes than the race it fixes.
+  //
+  // Residual: a STAGGERED retry (starting after this claim commits but before
+  // the payout finishes) still slips through. Admin-only tooling + ledger CAS
+  // keep the books consistent either way; confirm gateway state before rapid
+  // re-retries (see runPayout's PROCESSING note).
+  const claimed = await prisma.refundRequest.updateMany({
+    where: {
+      id: request.id,
+      status: RefundRequestStatus.APPROVED,
+      updatedAt: request.updatedAt,
+    },
+    data: { reviewedAt: request.reviewedAt }, // no-op write — bumps @updatedAt
+  });
+  if (claimed.count === 0) {
+    throw new AppError(
+      409,
+      "A payout attempt for this refund request is already in progress.",
+    );
+  }
+
   // Owed = approved amount minus what has already landed as REFUNDED payments.
   // Refunds before approval cannot exist (approval requires the booking still
   // PAID/CONFIRMED with untouched payments), so every REFUNDED row on this

@@ -6234,6 +6234,21 @@ var retryRefundPayout = async (id) => {
   if (!request.refundAmount || Number(request.refundAmount) <= 0) {
     throw new AppError(409, "This approval recorded no payout amount.");
   }
+  const claimed = await prisma.refundRequest.updateMany({
+    where: {
+      id: request.id,
+      status: RefundRequestStatus.APPROVED,
+      updatedAt: request.updatedAt
+    },
+    data: { reviewedAt: request.reviewedAt }
+    // no-op write — bumps @updatedAt
+  });
+  if (claimed.count === 0) {
+    throw new AppError(
+      409,
+      "A payout attempt for this refund request is already in progress."
+    );
+  }
   const refundedSoFar = await prisma.payment.aggregate({
     where: { bookingId: request.bookingId, status: PaymentStatus.REFUNDED },
     _sum: { amount: true }
