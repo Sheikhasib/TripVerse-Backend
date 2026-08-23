@@ -2,38 +2,528 @@
 
 [![CI](https://github.com/Sheikhasib/TripVerse-Backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Sheikhasib/TripVerse-Backend/actions/workflows/ci.yml)
 
-This is the **Step 2 — Data Models** build from the backend spec, working and verified.
-Read the spec files alongside this repo (`01-project-setup.md` through `15-backlog-summary.md`) and implement each step in order, in this same repo.
+TripVerse Server is the production backend REST API for **TripVerse**, a travel platform where customers discover tour packages, book them, pay through a real payment gateway, and leave reviews — while agents publish and manage their own packages and blog posts, and admins moderate the entire marketplace.
 
-## What's already built (Steps 1–3 core backbone + Step 2 data models)
+It covers the full domain: authentication with email verification and refresh-token rotation, RBAC for three roles, tour-package catalog with admin approval workflow, bookings with a validated state machine, SSLCommerz payments with refunds, reviews, blog with comments, wishlists, in-app notifications, role-scoped dashboards, image uploads, contact inbox, and email delivery.
 
-- Folder structure matching GearUp's conventions
-- `config/index.ts` — Zod env validation, fails fast on boot if a var is missing/malformed
-- `lib/prisma.ts` — Prisma 7 + `@prisma/adapter-pg` driver adapter (same as GearUp)
-- `utils/` — `AppError`, `catchAsync`, `sendResponse`, `jwt` (exact GearUp pattern)
-- `middleware/` — `globalErrorHandler` (Zod + Prisma + AppError branches), `notFound`, `req.user` typed with the generated `Role` enum
-- `app.ts` — helmet, CORS allow-list (dev + prod), two-tier rate limiting, `trust proxy`, body size limit, morgan, `/health` with a real DB ping
-- `server.ts` — connects Prisma, starts the server
-- `prisma.config.ts` — schema path, migrations, seed command, datasource URL (so no `--schema=` flag is needed)
-- `prisma/schema/` — full schema: 7 models (`User`, `Category`, `TourPackage`, `Booking`, `Review`, `ContactMessage`, `BlogPost`) + 6 enums, one file per model
-- Migration `20260811144926_init` applied to Postgres
+**Live API:** https://tripverse-server.vercel.app
 
-## What's NOT built yet
+---
 
-The feature modules: auth (incl. Google OAuth), uploads, contact, category, packages, bookings, reviews, blog, dashboard, and the seed script. `app.ts` has commented-out lines showing exactly where each module's routes get registered as you build them.
+## Table of Contents
 
-## Setup
+- [Feature Highlights](#feature-highlights)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [Environment Variables](#environment-variables)
+- [NPM Scripts](#npm-scripts)
+- [Database Schema](#database-schema)
+- [Seed Data & Demo Accounts](#seed-data--demo-accounts)
+- [API Reference](#api-reference)
+- [Authentication & Security](#authentication--security)
+- [Payment Flow (SSLCommerz)](#payment-flow-sslcommerz)
+- [Error Handling & Response Format](#error-handling--response-format)
+- [Testing](#testing)
+- [CI/CD](#cicd)
+- [Deployment (Vercel)](#deployment-vercel)
+- [License](#license)
 
-```bash
-npm install
-cp .env.example .env   # fill in DATABASE_URL (Neon), 2 random JWT secrets, Cloudinary creds
-npx prisma generate    # required — generated/ is gitignored
-npx prisma migrate dev --name init
-npm run dev
+---
+
+## Feature Highlights
+
+| Area | What's implemented |
+|---|---|
+| **Auth** | Email/password registration (USER/AGENT), login, Google OAuth sign-in, one-click demo login, JWT access + refresh tokens (httpOnly cookies **and** Bearer header), full email-verification and password-reset flows with Redis-backed OTPs and Nodemailer emails |
+| **Refresh-token rotation** | Every `POST /api/auth/refresh` mints a new refresh JWT and revokes the old one inside a `$transaction`. The ledger stores only SHA-256 hashes. Replaying a revoked token revokes the whole family via `tokenVersion` bump |
+| **RBAC** | Three roles (`USER`, `AGENT`, `ADMIN`) enforced by an `auth(...roles)` middleware that re-fetches the user on every request, so suspensions/deletions/role changes take effect immediately |
+| **Packages** | Agents create/edit their own packages (start `PENDING`, go live after admin approval), public catalog with search/filter/sort/pagination, slug-based detail, soft deletes |
+| **Bookings** | Server-computed `totalPrice` (client input ignored), duplicate-pending protection (409), stale-pending auto-cancel, strict status state machine, agent confirm flow, refund on cancellation |
+| **Payments** | SSLCommerz sandbox/live integration — session init, success/fail/cancel callbacks + IPN, server-side amount validation before settlement, idempotent double-fire protection, automatic refunds |
+| **Reviews** | Only users with a **completed booking** can review, agents can't review their own packages, one review per package per user (409), package average rating recomputed on create/edit/delete |
+| **Blog** | Agent/admin posts start as `DRAFT`, admin publishes, agent edits reset posts to `DRAFT`, public feed serves only `PUBLISHED`, one-level comments (replies-to-replies rejected), soft deletes everywhere |
+| **Wishlist** | Save/remove approved packages, idempotent add/remove, paginated list |
+| **Notifications** | In-app notifications generated by booking/package events, unread-count badge endpoint, mark-one/mark-all read |
+| **Dashboards** | Role-scoped analytics: platform-wide stats for admins, revenue/bookings/performance for agents, spend/upcoming trips for users |
+| **Uploads** | Multipart image upload (≤5 MB, jpg/png/webp) straight to Cloudinary |
+| **Contact** | Public submission form with best-effort Resend notification to the support inbox, admin triage with resolve toggle |
+
+## Tech Stack
+
+- **Runtime:** Node.js (CI targets Node 20 & 22), TypeScript (strict mode), native ESM
+- **Framework:** Express v5
+- **ORM:** Prisma v7 with PostgreSQL via the `@prisma/adapter-pg` driver adapter
+- **Validation:** Zod — environment variables at boot, request bodies/params/queries per route
+- **Auth:** `jsonwebtoken`, `bcryptjs`, `google-auth-library`
+- **Payments:** SSLCommerz (sandbox + live base URLs)
+- **Email:** Nodemailer (Gmail SMTP) for OTP/reset mails, Resend for contact notifications, EJS templates
+- **Cache/OTP store:** Redis (`node-redis`)
+- **Media:** Cloudinary + Multer (memory storage)
+- **Security:** helmet, CORS allow-list, three-tier express-rate-limit
+- **Build:** `tsup` (dev/prod bundle), `esbuild` (Vercel serverless bundle)
+- **Tests:** Vitest 4 + Supertest
+- **CI/CD:** GitHub Actions, Vercel (git-based), Husky pre-commit hook
+
+## Project Structure
+
+```
+tripverse-server/
+├── api/index.js              # Committed single-file esbuild bundle for Vercel (auto-rebuilt by pre-commit hook)
+├── prisma/
+│   ├── schema/               # Multi-file Prisma schema — one file per model + enums.prisma
+│   ├── migrations/           # SQL migrations (init … refresh-token rotation)
+│   └── seed.ts               # Demo categories, packages, posts, bookings, reviews
+├── src/
+│   ├── app.ts                # Express app: middleware, rate limiters, route registration, health check
+│   ├── server.ts             # Boot: Prisma connect (+ optional Redis), listen
+│   ├── config/index.ts       # Zod-validated environment config — the ONLY place env is read
+│   ├── lib/                  # Singletons: prisma, redis, cloudinary, nodemailer, googleAuth, sslcommerz
+│   ├── middleware/           # auth (JWT + RBAC), validateRequest (Zod), globalErrorHandler, notFound
+│   ├── templates/            # EJS email templates (OTP, forgot-password, welcome, reset-success)
+│   ├── utils/                # sendResponse, catchAsync, AppError, jwt, email, authEmail, slugify, notification
+│   └── modules/              # One folder per feature, each following the same layout:
+│       └── <feature>/        #   *.route.ts → *.controller.ts → *.service.ts (+ *.validation.ts, *.interface.ts)
+├── tests/                    # Vitest suites (10 files, 67 tests) + shared factories/setup
+├── .github/workflows/ci.yml  # Test matrix (Node 20/22 + Postgres 16) + bundle-freshness job
+├── esbuild.vercel.mjs        # Bundles src/app.ts into api/index.js
+└── vercel.json               # Routes everything to the serverless bundle
 ```
 
-`npm run dev` boots the server and `GET /health` returns `{ success: true, db: "connected" }`.
+### Module convention
 
-## Next step
+Every feature module under `src/modules/` follows the same layered pattern:
 
-Open `04-auth-module.md` and build the auth module (register, login, demo-login, logout, /me, Google OAuth, plus the `/api/users` endpoints). `03-core-backbone.md` (error handling, response envelope, CORS, rate limiting, health check) is already in place.
+```
+*.route.ts      → HTTP routing + middleware wiring (validateRequest, auth roles)
+*.controller.ts → thin request/response layer, wrapped in catchAsync
+*.service.ts    → business logic + Prisma queries, throws AppError on failure
+*.validation.ts → Zod schemas for body/query/params
+*.interface.ts  → shared TypeScript types
+```
+
+No DI container — singletons (`prisma`, `config`, `jwtUtils`, cloudinary, redis…) are imported directly.
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js ≥ 20
+- A PostgreSQL database (local, Neon, Supabase, etc.)
+- Cloudinary credentials (required at boot)
+- Optional integrations that degrade gracefully: Redis, Gmail SMTP, Google OAuth client ID, Resend keys, SSLCommerz store creds
+
+### Setup
+
+```bash
+git clone https://github.com/Sheikhasib/TripVerse-Backend.git
+cd tripverse-server
+npm install
+
+cp .env.example .env     # fill in real values (see table below)
+
+npx prisma generate      # REQUIRED — generated/ is gitignored
+npx prisma migrate dev   # apply migrations
+npx prisma db seed       # optional: demo data (see Seed Data below)
+
+npm run dev              # tsx watch src/server.ts
+```
+
+Verify the server is up:
+
+```bash
+curl http://localhost:4000/health
+# { "success": true, "message": "OK", "db": "connected", "timestamp": "..." }
+```
+
+> **Note:** `prisma.config.ts` supplies the schema path — never pass `--schema=` to Prisma commands.
+
+## Environment Variables
+
+All variables are validated once at boot via Zod in `src/config/index.ts`; a missing or malformed **required** var exits the process immediately. Nothing else in the codebase reads `process.env` directly. See `.env.example` for a copy-paste template.
+
+### Required
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `JWT_ACCESS_SECRET` | Secret for short-lived access tokens |
+| `JWT_REFRESH_SECRET` | Secret for long-lived refresh tokens |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Image upload destination |
+
+### With defaults
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `4000` | HTTP port |
+| `NODE_ENV` | `development` | `development` \| `test` \| `production` |
+| `BCRYPT_SALT_ROUNDS` | `10` | Password hashing cost |
+| `JWT_ACCESS_EXPIRES_IN` | `1d` | Access token TTL |
+| `JWT_REFRESH_EXPIRES_IN` | `30d` | Refresh token TTL |
+| `SSL_COMMERZ_SANDBOX` | `true` | `false` switches to live gateway URLs |
+| `DATABASE_URL_TEST` | — | Separate DB for the test suite |
+
+### Optional — feature-gated (the app boots without them)
+
+| Variable | Unlocks | Behaviour when missing |
+|---|---|---|
+| `FRONTEND_URL_DEV` / `FRONTEND_URL_PROD` | CORS origins + payment redirect targets | Falls back to localhost / backend URL |
+| `GOOGLE_CLIENT_ID` | `POST /api/auth/google` | Clean 400 from the Google route |
+| `REDIS_USER` / `REDIS_PASSWORD` / `REDIS_HOST` / `REDIS_PORT` | Email-verification + password-reset OTP storage | Auth endpoints return **503 "not configured"** |
+| `SMTP_USER` / `SMTP_PASSWORD` | Nodemailer delivery of OTP/reset emails | Emails become best-effort no-ops |
+| `RESEND_API_KEY`, `CONTACT_RECEIVER_EMAIL`, `EMAIL_FROM` | Contact-form notification emails | Submission still succeeds; email is skipped |
+| `SSL_COMMERZ_STORE_ID` / `SSL_COMMERZ_STORE_PASSWORD` | Payment endpoints | Clean "not configured" error from payment routes |
+| `BACKEND_PUBLIC_URL` | Publicly reachable base URL used to build SSLCommerz callback/IPN URLs — must NOT be localhost in sandbox | Payment redirects fall back to backend URL |
+| `SSLCOMMERZ_INIT_URL` / `SSLCOMMERZ_VALIDATE_URL` / `SSLCOMMERZ_REFUND_URL` | Explicit override of derived sandbox/live gateway URLs | Derived from `SSL_COMMERZ_SANDBOX` |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Admin credentials used by the seed script | Falls back to `demo-admin@tripverse.com` / `demo123` |
+
+## NPM Scripts
+
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Dev server with hot reload (`tsx watch src/server.ts`) |
+| `npm run build` | Production bundle → `dist/` (tsup, ESM, sourcemaps) |
+| `npm start` | Run the compiled `dist/server.js` |
+| `npm run build:vercel` | Rebuild the Vercel serverless bundle `api/index.js` (also runs automatically via the Husky pre-commit hook whenever `src/` changes are committed) |
+| `npm test` | Full Vitest suite (67 tests, sequential) |
+| `npm run test:watch` | Vitest in watch mode |
+| `npx prisma generate` | Regenerate the Prisma client into `generated/` |
+| `npx prisma migrate dev --name <name>` | Create/apply a migration |
+| `npx prisma db seed` | Run `prisma/seed.ts` |
+| `npx tsc --noEmit` | Typecheck (includes test files) |
+
+## Database Schema
+
+The Prisma schema is **multi-file** under `prisma/schema/` — one file per model plus `enums.prisma`. All models map to snake_case tables via `@@map`. Monetary fields (`price`, `totalPrice`, amounts) are `Decimal @db.Decimal(10, 2)` and are converted to `Number()` before leaving the service layer.
+
+**Models (12):**
+
+| Model | Purpose |
+|---|---|
+| `User` | Accounts with `role`, `status`, `authProvider`, `emailVerified`, soft-delete flag, and `tokenVersion` for global token invalidation |
+| `Category` | Package taxonomy (admin-managed) |
+| `TourPackage` | Agent-owned listings: slug, location, price, duration, rating average, image array, approval `status`, soft delete |
+| `Booking` | User ↔ package reservations with `BookingStatus`, travel date, computed total price |
+| `Payment` | SSLCommerz sessions/settlements: amount validation state, idempotency keys, refund tracking |
+| `Review` | One per user per package, drives the denormalized package rating |
+| `BlogPost` | Agent/admin articles with DRAFT/PUBLISHED workflow |
+| `BlogComment` | One-level comments on published posts |
+| `WishlistItem` | Unique (user, package) saves |
+| `Notification` | Per-user event notifications with read state |
+| `ContactMessage` | Public contact submissions with resolved flag |
+| `RefreshToken` | Refresh-token rotation ledger — stores SHA-256 hashes only, never raw JWTs |
+
+**Enums (8):**
+
+| Enum | Values |
+|---|---|
+| `Role` | `USER`, `AGENT`, `ADMIN` |
+| `UserStatus` | `ACTIVE`, `SUSPENDED` |
+| `AuthProvider` | `CREDENTIAL`, `GOOGLE` |
+| `PackageStatus` | `PENDING`, `APPROVED`, `REJECTED` |
+| `BookingStatus` | `PENDING`, `PAID`, `CONFIRMED`, `CANCELLED`, `COMPLETED` |
+| `PaymentStatus` | `INITIATED`, `SUCCESS`, `FAILED`, `CANCELLED`, `REFUNDED` |
+| `PostStatus` | `DRAFT`, `PUBLISHED` |
+| `NotificationType` | `BOOKING_CREATED`, `BOOKING_CONFIRMED`, `BOOKING_CANCELLED`, `PACKAGE_APPROVED`, `PACKAGE_REJECTED` |
+
+Strategic composite indexes back the hot paths (e.g. `categoryId + price` on packages, booking lookups).
+
+## Seed Data & Demo Accounts
+
+`npx prisma db seed` resets the core tables (dependency order, FK-safe) and creates realistic demo content inside a transaction:
+
+- **5 categories** (Beaches, Adventure, …)
+- **6 tour packages** across Bangladesh destinations with real Unsplash photography
+- **4 blog posts** (mix of published/draft) + comments
+- **Bookings spread relative to *now*** — several `COMPLETED` within the last 30 days (so revenue-trend charts are always populated), future `CONFIRMED`/`PENDING` trips, and cancelled ones — meaning the seed never decays no matter when you run it
+- Reviews, wishlist items, and contact messages
+
+**Demo logins** (all usable via `POST /api/auth/demo-login` or regular `/login`):
+
+| Role | Email | Password |
+|---|---|---|
+| Admin | `demo-admin@tripverse.com` | `demo123` *(or `ADMIN_EMAIL`/`ADMIN_PASSWORD` if set)* |
+| Agent | `demo-agent@tripverse.com` | `demo123` |
+| User | `demo-user@tripverse.com` | `demo123` |
+
+## API Reference
+
+Base URL (local): `http://localhost:4000` · Base URL (prod): `https://tripverse-server.vercel.app`
+
+Legend: 🔓 public · 🔑 any authenticated user · 👤 USER · 🧳 AGENT · 🛡️ ADMIN
+
+### Health
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| GET | `/` | 🔓 | Welcome message |
+| GET | `/health` | 🔓 | Real DB connectivity check (`SELECT 1`) — returns 503 when the DB is unreachable |
+
+### Auth — `/api/auth`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| POST | `/register` | 🔓 | Register as USER or AGENT (role restricted in service). Stages the account behind an email-verification OTP when mail is configured |
+| POST | `/login` | 🔓 | Credential login → access + refresh JWTs (body + httpOnly cookies); rejects wrong password (401) and suspended users (403) |
+| POST | `/google` | 🔓 | Sign in with a Google ID token |
+| POST | `/demo-login` | 🔓 | One-click login as demo USER/AGENT/ADMIN (grader/demo friendly) |
+| POST | `/verify-email` | 🔓 | Confirm registration OTP → creates the user and logs in |
+| POST | `/resend-verification` | 🔓 | Re-send the registration OTP |
+| POST | `/forgot-password` | 🔓 | Email a password-reset OTP |
+| POST | `/reset-password` | 🔓 | Consume reset OTP + set new password |
+| POST | `/refresh` | 🔓 | Rotate refresh token (old one revoked atomically; replay revokes the whole family) |
+| POST | `/logout` | 🔑 | Revoke the refresh token + bump `tokenVersion` (kills the access token too) |
+| GET | `/me` | 🔑 | Current user profile |
+
+### Users — `/api/users`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| PATCH | `/profile` | 🔑 | Update own profile |
+| GET | `/` | 🛡️ | List users with filters + pagination |
+| PATCH | `/:id/role` | 🛡️ | Change a user's role |
+| PATCH | `/:id/status` | 🛡️ | Suspend / reactivate a user |
+| DELETE | `/:id` | 🛡️ | Soft-delete a user |
+
+### Categories — `/api/categories`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| GET | `/` | 🔓 | List all categories |
+| POST | `/` | 🛡️ | Create a category |
+| PATCH | `/:id` | 🛡️ | Update a category |
+| DELETE | `/:id` | 🛡️ | Delete a category |
+
+### Packages — `/api/packages`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| GET | `/` | 🔓 | Public catalog — search, category/price filters, sorting, pagination (APPROVED only) |
+| GET | `/:slug` | 🔓 | Public package detail by slug |
+| GET | `/internal/my-packages` | 🧳 | Agent's own packages incl. PENDING/REJECTED (pre-approval preview) |
+| GET | `/internal/all` | 🛡️ | All packages regardless of status (moderation UI) |
+| POST | `/` | 🧳🛡️ | Create a package (agents own theirs; admins can create for any agent). Starts PENDING |
+| PATCH | `/:id` | 🧳🛡️ | Update (agent = own only, admin = any) |
+| PATCH | `/:id/status` | 🛡️ | Approve / reject a package (notifies the agent) |
+| DELETE | `/:id` | 🧳🛡️ | Soft delete |
+
+> Route-ordering note: `/internal/*` and `/my-*` style literals are registered before param routes (`/:slug`, `/:id`) so Express never swallows them.
+
+### Bookings — `/api/bookings`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| POST | `/` | 👤 | Create a booking — `totalPrice` computed server-side; duplicate pending booking for the same package+date → 409; a stale pending booking is auto-cancelled to free the slot |
+| GET | `/my-bookings` | 👤 | Own bookings, filtered + paginated |
+| GET | `/agent-bookings` | 🧳 | Bookings scoped to the agent's packages |
+| GET | `/:id` | 🔑 | Detail — owner, package's agent, or admin |
+| GET | `/` | 🛡️ | All bookings (search + pagination) |
+| PATCH | `/:id/status` | 🔑 | Status transition, validated against the booking state machine (illegal transitions → 400; PAID → CANCELLED triggers a gateway refund) |
+
+### Payments — `/api/payments` (SSLCommerz)
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| POST | `/create` | 👤 | Open a gateway session for one of your own PENDING bookings |
+| POST | `/confirm` | 🔓 | Gateway callback (success/fail/cancel) — settles the booking only after server-side amount validation against the gateway validator; redirects the browser to the frontend result page |
+| POST | `/ipn` | 🔓 | Instant Payment Notification — same idempotent settle path (double-fired IPNs never double-settle) |
+
+See [Payment Flow](#payment-flow-sslcommerz) for the end-to-end sequence.
+
+### Reviews — `/api/reviews`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| POST | `/` | 👤 | Review a package — requires a COMPLETED booking with it, cannot review your own (agent) package, one review per package (409); recomputes the package average |
+| GET | `/package/:packageId` | 🔓 | Public paginated reviews for a package |
+| PATCH | `/:id` | 👤 | Author-only edit (average recomputed) |
+| DELETE | `/:id` | 🔑 | Author or ADMIN (deleted ratings excluded from the average) |
+
+### Blog — `/api/blog`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| GET | `/` | 🔓 | Public feed — PUBLISHED + non-deleted only |
+| GET | `/:slug` | 🔓 | Public post detail by slug (drafts 404) |
+| GET | `/my-posts` | 🧳🛡️ | Author's own posts incl. drafts |
+| GET | `/internal/all` | 🛡️ | Every post (moderation UI) |
+| POST | `/` | 🧳🛡️ | Create a post (starts DRAFT) |
+| GET | `/:slug/comments` | 🔓 | Comments on a published post |
+| POST | `/:slug/comments` | 🔑 | Comment (one level — replies-to-replies rejected) |
+| DELETE | `/comments/:id` | 🔑 | Owner or ADMIN soft-deletes a comment |
+| PATCH | `/:id/status` | 🛡️ | Publish / unpublish |
+| PATCH | `/:id` | 🧳🛡️ | Edit — agent edits reset the post to DRAFT (re-review), admin edits keep status |
+| DELETE | `/:id` | 🧳🛡️ | Soft delete |
+
+### Wishlist — `/api/wishlist` (USER only)
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| POST | `/` | 👤 | Save a package (APPROVED only; idempotent) |
+| GET | `/` | 👤 | My wishlist, newest first, paginated |
+| DELETE | `/:packageId` | 👤 | Remove (idempotent) |
+
+### Notifications — `/api/notifications`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| GET | `/` | 🔑 | My notifications (paginated, optional `?unread=true`) |
+| GET | `/unread-count` | 🔑 | Count for the bell badge |
+| PATCH | `/read-all` | 🔑 | Mark all read (idempotent) |
+| PATCH | `/:id/read` | 🔑 | Mark one read (owner only) |
+
+Events that generate notifications: booking created / confirmed / cancelled, package approved / rejected.
+
+### Dashboard — `/api/dashboard`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| GET | `/admin` | 🛡️ | Platform-wide analytics (users, packages, bookings, revenue trend over `?days=`) |
+| GET | `/agent` | 🧳 | Scoped to the agent's own packages/bookings/revenue/performance |
+| GET | `/user` | 👤 | Own bookings, upcoming trips, total spend |
+
+### Uploads — `/api/uploads`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| POST | `/image` | 🧳🛡️ | Multipart field `image` — ≤5 MB, jpg/png/webp only → uploaded to Cloudinary, returns the hosted URL |
+
+### Contact — `/api/contact`
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| POST | `/` | 🔓 | Submit a message (best-effort email to the support inbox) |
+| GET | `/` | 🛡️ | List messages (filterable, paginated) |
+| PATCH | `/:id` | 🛡️ | Toggle resolved / unresolved |
+
+## Authentication & Security
+
+### Token model
+
+- **Access token** — short-lived (`1d` default), sent as an httpOnly cookie **and** returned in the body; accepted from either the cookie or the `Authorization: Bearer <token>` header.
+- **Refresh token** — long-lived (`30d` default), rotated on every use. Each rotation revokes the previous token in a `$transaction`; the `refresh_tokens` ledger stores **only SHA-256 hashes**. Presenting an already-revoked token is treated as theft: the whole token family is revoked by bumping the user's `tokenVersion`, which instantly invalidates every outstanding token for that account. Frontends should **single-flight** `/refresh` calls (share the in-flight promise) to avoid two-tab races triggering a false family revoke.
+- **Per-request re-fetch** — the `auth` middleware loads the user from the DB on every request, so role changes, suspensions, deletions, and `tokenVersion` bumps take effect immediately without waiting for token expiry.
+
+### Rate limiting (three tiers, standard headers, skipped when `NODE_ENV=test`)
+
+| Limiter | Routes | Budget |
+|---|---|---|
+| Strict credential | `/api/auth/login`, `/register`, `/reset-password` | 5 requests / 15 min |
+| OTP / non-credential auth | `/verify-email`, `/resend-verification`, `/forgot-password`, `/demo-login`, `/google` | 10 requests / 15 min |
+| General API | everything under `/api` | 100 requests / 15 min |
+
+Separate instances mean a full register → verify → forgot → reset pass never eats into the strict credential budget.
+
+### Other hardening
+
+- `helmet` security headers on every response
+- CORS allow-list limited to the dev + prod frontend origins, `credentials: true`
+- `trust proxy = 1` (set before the limiters, so rate limiting keys on real client IPs behind Render/Railway/Vercel proxies rather than lumping everyone together)
+- 100 KB JSON/urlencoded body cap (long-form blog content fits; images go through Cloudinary as URLs)
+- bcrypt password hashing (`BCRYPT_SALT_ROUNDS`)
+- Soft deletes (`isDeleted`) across domain models — no destructive row removal from the API surface
+- Zod validation on every mutating endpoint's body/query/params via `validateRequest`
+
+## Payment Flow (SSLCommerz)
+
+```
+USER                    SERVER                         SSLCOMMERZ
+ │ POST /payments/create │                                │
+ ├──────────────────────►│ init session (owned PENDING     │
+ │                       │ booking only, 409 if already   │
+ │                       │ paid/confirmed)                 │
+ │◄─ gateway page URL ───┼───────────────────────────────►│
+ │      customer pays ───┼───────────────────────────────►│
+ │                       │◄── POST /payments/confirm ─────┤ (callback)
+ │                       │◄── POST /payments/ipn ─────────┤ (IPN)
+ │                       │  validate val_id + AMOUNT vs    │
+ │                       │  stored amount → settle booking │
+ │                       │  to PAID (idempotent)           │
+ │◄── browser redirected to frontend result page           │
+```
+
+Safety properties (covered by tests):
+
+- **Amount validation** — settlement happens only when the gateway validator confirms the paid amount matches the booking; a mismatch marks the payment FAILED.
+- **Idempotency** — a double-fired IPN or repeated callback never double-settles or overwrites an existing SUCCESS payment.
+- **Unknown sessions ignored** — callbacks for sessions this server never created are safely discarded.
+- **Refunds** — cancelling a booking whose payment settled issues a gateway refund and flips the payment to `REFUNDED`; if the refund call itself fails, the payment deliberately stays `SUCCESS` (money-safe default).
+
+## Error Handling & Response Format
+
+### Success envelope
+
+```json
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "…",
+  "data": { },
+  "meta": { "page": 1, "limit": 10, "total": 42, "totalPages": 5 }
+}
+```
+
+`meta` accompanies paginated list endpoints.
+
+### Error envelope
+
+```json
+{
+  "success": false,
+  "message": "Human-readable explanation",
+  "errorDetails": { }
+}
+```
+
+Controllers are wrapped in `catchAsync`; everything funnels into the `globalErrorHandler`, which normalizes known error types:
+
+| Source | Result |
+|---|---|
+| Zod validation error | 400 with field details |
+| `AppError(statusCode, message)` | Pass-through with its status code |
+| Prisma P2002 (unique violation) | 409 Conflict |
+| Prisma P2003 (FK violation) | 409 Conflict |
+| Prisma P2025 (record not found) | 404 Not Found |
+| Prisma P1000 (auth failed) | 401 Unauthorized |
+| Prisma P1001 (DB unreachable) | 503 Service Unavailable |
+| Anything else | 500 Internal Server Error |
+
+Unhandled routes hit `notFoundHandler` → 404.
+
+## Testing
+
+```bash
+npm test            # 67 tests across 10 suites
+npm run test:watch  # watch mode
+```
+
+- **Stack:** Vitest 4 + Supertest hitting the real Express app.
+- **Suites:** `auth`, `booking`, `payment`, `review`, `wishlist`, `notification`, `blog`, `contact`, `dashboard`, `email`.
+- **Database:** the suite runs against `DATABASE_URL_TEST` and **never truncates** — each file creates rows under unique UUID keys and cleans up only what it created (children before parents) in `tests/setup.ts`. Assertions use unique slugs/keys and deltas rather than absolute list counts, so the suite is safe against a shared/live database.
+- **Determinism:** suites run sequentially (`fileParallelism: false`, forked pool, isolated workers, 30 s timeouts).
+- **External boundaries mocked per file** — `src/lib/sslcommerz`, `src/utils/email`, `src/lib/redis`, `src/utils/authEmail`, `src/lib/googleAuth`, and the `resend` package — while **Prisma stays real**, so state machines, idempotency, rotation, and rating recomputation are tested end-to-end.
+- Rate limiters self-disable under `NODE_ENV=test`.
+
+## CI/CD
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
+
+1. **`test` job** — matrix over Node 20 & 22 with a `postgres:16` service container:
+   `npm ci` → `prisma generate` → `prisma migrate deploy` → `tsc --noEmit` → `npm run build` → `npm test`
+2. **`bundle-freshness` job** — rebuilds `api/index.js` with esbuild and fails if the committed bundle differs from what `src/` produces (`git diff --exit-code -- api/`), making stale-bundle drift impossible to merge.
+
+Additionally, the **Husky pre-commit hook** rebuilds and re-stages `api/index.js` locally whenever a `src/` file is part of a commit.
+
+## Deployment (Vercel)
+
+Deployed from `main` via git integration at **https://tripverse-server.vercel.app**.
+
+- The root of the deployment is `api/index.js` — a **single esbuild bundle** of `src/app.ts`, produced by `esbuild.vercel.mjs`.
+- `vercel.json` routes `/(.*)` to this bundle; `installCommand` additionally runs `npx prisma generate` because the generated client lives in the gitignored `generated/` directory.
+- **Why the bundle is committed:** `@vercel/node` does not bundle the `src/` tree itself (historically caused `ERR_MODULE_NOT_FOUND`), so the committed `api/index.js` must always match `src/` — enforced by both the pre-commit hook and the CI freshness job above.
+- **Environment variables come from the Vercel dashboard, not `.env`.** Production requires: `DATABASE_URL`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, the three `CLOUDINARY_*` vars, and `BACKEND_PUBLIC_URL` (set to the Vercel URL so gateway callbacks resolve). `FRONTEND_URL_PROD` should be set once the frontend is live.
+- Everything degrades gracefully by design: missing Redis/SMTP/Google/Resend/SSLCommerz configuration never prevents boot — only the affected endpoints respond with clean "not configured" errors.
+
+## License
+
+ISC
