@@ -156,22 +156,38 @@ const createRefundRequest = async (
     daysBeforeTravel,
   );
 
-  const created = await prisma.refundRequest.create({
-    data: {
-      bookingId: booking.id,
-      userId,
-      category: payload.category,
-      reason: payload.reason,
-      evidenceUrl: payload.evidenceUrl ?? null,
-      daysBeforeTravel,
-      suggestedPercentage,
-    },
-    include: {
-      booking: { include: { package: refundPackageSelect } },
-      user: refundUserSelect,
-      reviewer: refundUserSelect,
-    },
-  });
+  let created;
+  try {
+    created = await prisma.refundRequest.create({
+      data: {
+        bookingId: booking.id,
+        userId,
+        category: payload.category,
+        reason: payload.reason,
+        evidenceUrl: payload.evidenceUrl ?? null,
+        daysBeforeTravel,
+        suggestedPercentage,
+      },
+      include: {
+        booking: { include: { package: refundPackageSelect } },
+        user: refundUserSelect,
+        reviewer: refundUserSelect,
+      },
+    });
+  } catch (error) {
+    // The findFirst above can race a concurrent application — the partial
+    // unique index (one live row per booking) is the real gatekeeper.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      throw new AppError(
+        409,
+        "A refund application already exists for this booking.",
+      );
+    }
+    throw error;
+  }
 
   runInBackground([
     sendRefundReceivedEmail({
@@ -328,6 +344,16 @@ const decideRefundRequest = async (
     percentage = Math.min(percentage, request.suggestedPercentage);
   }
   percentage = Math.max(0, Math.min(100, percentage));
+
+  // Approving 0% would cancel the booking, flip the request to REFUNDED and
+  // notify "৳0.00 approved" — a rejection wearing an approval's clothes.
+  // A meaningful "no" is REJECT with a review note.
+  if (percentage === 0) {
+    throw new AppError(
+      400,
+      "A 0% approval is not allowed — reject the application with a review note instead.",
+    );
+  }
 
   const settledPayments = await prisma.payment.findMany({
     where: {

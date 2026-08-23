@@ -67,6 +67,7 @@ Verify with `GET /health` → `{ success: true, db: "connected" }`.
   — all `@@map` to snake_case tables (`users`, `tour_packages`, ...)
 - Money is `Decimal @db.Decimal(10, 2)` (`price`, `totalPrice`) — map to `Number()` before returning from services
 - `tsconfig.json` has `rootDir` commented out (GearUp's fix) so the generated client outside `src/` doesn't break `tsc`
+- `refund_requests` has a **partial unique index** (`bookingId WHERE status <> 'REJECTED'`, migration `20260823040400`) that Prisma can't model — future `prisma migrate dev` diffs will propose dropping it; **delete the proposed `DROP INDEX` line** before applying
 
 ## Config & env
 

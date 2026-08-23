@@ -62,6 +62,9 @@ Notes
 
 - Your percentage is **locked in when you submit** the application — a slower review never
   moves you into a lower bracket. Applying early still maximizes your bracket.
+- You can **apply after the travel date has passed** (for example, after returning from a
+  disrupted trip). Change-of-plans applications then fall into the 0% bracket, but
+  documented-emergency categories (§3) remain eligible for the full rate.
 - The refund amount is calculated on the amount actually paid for the booking.
 - Any costs already paid by TripVerse to third parties on your behalf (visas, permits,
   insurance, non-recoverable supplier charges) may be deducted from the refundable amount.

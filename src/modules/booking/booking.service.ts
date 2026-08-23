@@ -1,5 +1,5 @@
 import { Prisma } from "../../../generated/prisma/client";
-import { BookingStatus, NotificationType, PackageStatus, PaymentStatus, Role } from "../../../generated/prisma/enums";
+import { BookingStatus, NotificationType, PackageStatus, PaymentStatus, RefundRequestStatus, Role } from "../../../generated/prisma/enums";
 import { prisma } from "../../lib/prisma";
 import { AppError } from "../../utils/appError";
 import { sslcommerzRefund } from "../../lib/sslcommerz";
@@ -130,6 +130,31 @@ const bookingPaymentSelect = {
 // latest attempt (used for the user payment-history "latest status" row).
 const bookingPaymentsInclude = {
   ...bookingPaymentSelect,
+  orderBy: { createdAt: "desc" as const },
+} as const;
+
+// Refund applications surfaced on the booking detail page (step 26 DoD) —
+// at most 2 lifetime rows per booking, newest first.
+const bookingRefundSelect = {
+  select: {
+    id: true,
+    category: true,
+    reason: true,
+    evidenceUrl: true,
+    status: true,
+    daysBeforeTravel: true,
+    suggestedPercentage: true,
+    approvedPercentage: true,
+    refundAmount: true,
+    reviewNote: true,
+    createdAt: true,
+    reviewedAt: true,
+    reviewer: bookingUserSelect,
+  },
+} as const;
+
+const bookingRefundsInclude = {
+  ...bookingRefundSelect,
   orderBy: { createdAt: "desc" as const },
 } as const;
 
@@ -345,6 +370,7 @@ const getBookingDetail = async (id: string, actor: BookingActor) => {
       package: bookingPackageDetailSelect,
       user: bookingUserSelect,
       payments: bookingPaymentsInclude,
+      refundRequests: bookingRefundsInclude,
     },
   });
 
@@ -355,7 +381,14 @@ const getBookingDetail = async (id: string, actor: BookingActor) => {
     throw new AppError(403, "You are not authorized to view this booking.");
   }
 
-  return mapBookingList(booking);
+  return {
+    ...mapBookingList(booking),
+    refundRequests: booking.refundRequests.map((request) => ({
+      ...request,
+      refundAmount:
+        request.refundAmount === null ? null : Number(request.refundAmount),
+    })),
+  };
 };
 
 // ── Refund (booking cancelled with settled money) ───────────────────────────
@@ -502,6 +535,7 @@ const updateBookingStatus = async (
 
   // compare-and-set: the transition applies only if the recorded status still
   // matches — a concurrent change makes count 0 and the request fails safely.
+  let closedRefunds = { count: 0 };
   const updated = await prisma.$transaction(async (tx) => {
     const result = await tx.booking.updateMany({
       where: { id, status: booking.status },
@@ -522,6 +556,21 @@ const updateBookingStatus = async (
       await tx.payment.updateMany({
         where: { bookingId: id, status: PaymentStatus.INITIATED },
         data: { status: PaymentStatus.CANCELLED },
+      });
+
+      // An out-of-band agency/admin cancel also closes any live refund
+      // application: leaving it PENDING would wedge it forever (approval has
+      // to flip the booking itself, which just became impossible). Pure
+      // bookkeeping — the customer is already getting the full direct refund.
+      closedRefunds = await tx.refundRequest.updateMany({
+        where: { bookingId: id, status: RefundRequestStatus.PENDING },
+        data: {
+          status: RefundRequestStatus.REJECTED,
+          reviewNote:
+            "Closed automatically — the booking was cancelled by the agency and the payment is being refunded in full.",
+          reviewedById: actor.id,
+          reviewedAt: new Date(),
+        },
       });
     }
 
@@ -600,6 +649,18 @@ runInBackground([
         ),
       ),
     );
+
+    if (closedRefunds.count > 0) {
+      runInBackground([
+        notify(
+          booking.userId,
+          NotificationType.REFUND_REJECTED,
+          "Refund application closed",
+          "Your refund application was closed because the agency cancelled this booking directly — your payment is being refunded in full.",
+          `/dashboard/bookings/${id}`,
+        ),
+      ]);
+    }
   }
 
   return {

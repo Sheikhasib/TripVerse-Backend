@@ -476,6 +476,106 @@ describe("refund", () => {
     expect(all.status).toBe(200);
     expect(all.body.meta.total).toBeGreaterThanOrEqual(1);
   });
+
+  it("surfaces refund requests on the booking detail endpoint", async () => {
+    const user = await createUser();
+    const booking = await createBooking({
+      userId: user.id,
+      status: BookingStatus.PAID,
+      travelDate: FAR_DATE(),
+    });
+    const userToken = (await loginAs(user)).accessToken;
+    const created = await createRefundRequestViaApi(booking.id, userToken);
+
+    const res = await request(app)
+      .get(`/api/bookings/${booking.id}`)
+      .set(bearer(userToken));
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data.refundRequests)).toBe(true);
+    expect(res.body.data.refundRequests).toHaveLength(1);
+
+    const row = res.body.data.refundRequests[0];
+    expect(row.id).toBe(created.id);
+    expect(row.status).toBe(RefundRequestStatus.PENDING);
+    expect(row.suggestedPercentage).toBe(90);
+    expect(row.refundAmount).toBeNull();
+    expect(row.reviewer).toBeNull();
+
+    // list rows stay lean — no refund payload there
+    const list = await request(app).get("/api/bookings/my-bookings").set(bearer(userToken));
+    expect(list.status).toBe(200);
+    const listed = list.body.data.find((b: { id: string }) => b.id === booking.id);
+    expect(listed).toBeDefined();
+    expect(listed.refundRequests).toBeUndefined();
+  });
+
+  it("refuses a 0% approval — rejection is the correct vehicle", async () => {
+    const user = await createUser();
+    const admin = await createAdmin();
+    const booking = await createBooking({
+      userId: user.id,
+      status: BookingStatus.PAID,
+      travelDate: FAR_DATE(),
+    });
+    const userToken = (await loginAs(user)).accessToken;
+    const adminToken = (await loginAs(admin)).accessToken;
+    const created = await createRefundRequestViaApi(booking.id, userToken);
+
+    const res = await decide(created.id, adminToken, {
+      action: "APPROVE",
+      approvedPercentage: 0,
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/reject/i);
+
+    // nothing moved: request still pending, booking untouched, no payout
+    expect(sslcommerzRefund).not.toHaveBeenCalled();
+    const requestRow = await prisma.refundRequest.findUnique({
+      where: { id: created.id },
+    });
+    expect(requestRow?.status).toBe(RefundRequestStatus.PENDING);
+    const bookingRow = await prisma.booking.findUnique({ where: { id: booking.id } });
+    expect(bookingRow?.status).toBe(BookingStatus.PAID);
+  });
+
+  it("auto-closes a live application when the agency cancels the booking directly", async () => {
+    const user = await createUser();
+    const agent = await createAgent();
+    const tourPackage = await createPackage({ agentId: agent.id });
+    const booking = await createBooking({
+      userId: user.id,
+      packageId: tourPackage.id,
+      totalPrice: 2000,
+      status: BookingStatus.PAID,
+      travelDate: FAR_DATE(),
+    });
+    const userToken = (await loginAs(user)).accessToken;
+    const agentToken = (await loginAs(agent)).accessToken;
+    const created = await createRefundRequestViaApi(booking.id, userToken);
+
+    // out-of-band agency cancel (no settled payments → no gateway involvement)
+    const cancel = await request(app)
+      .patch(`/api/bookings/${booking.id}/status`)
+      .set(bearer(agentToken))
+      .send({ status: BookingStatus.CANCELLED });
+    expect(cancel.status).toBe(200);
+
+    const mine = await request(app)
+      .get("/api/refunds/mine")
+      .set(bearer(userToken));
+    const row = mine.body.data.find((r: { id: string }) => r.id === created.id);
+    expect(row.status).toBe(RefundRequestStatus.REJECTED);
+    expect(row.reviewNote).toMatch(/cancel/i);
+    expect(row.reviewedAt).not.toBeNull();
+
+    // the freed slot allows exactly one re-application attempt to be counted,
+    // but the cancelled booking itself is no longer eligible
+    const reapplied = await apply(userToken, applicationBody(booking.id));
+    expect(reapplied.status).toBe(400);
+    expect(reapplied.body.message).toMatch(/paid bookings/i);
+  });
 });
 
 // Applies through the real endpoint so validation + snapshot paths stay exercised.

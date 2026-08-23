@@ -2676,6 +2676,27 @@ var bookingPaymentsInclude = {
   ...bookingPaymentSelect,
   orderBy: { createdAt: "desc" }
 };
+var bookingRefundSelect = {
+  select: {
+    id: true,
+    category: true,
+    reason: true,
+    evidenceUrl: true,
+    status: true,
+    daysBeforeTravel: true,
+    suggestedPercentage: true,
+    approvedPercentage: true,
+    refundAmount: true,
+    reviewNote: true,
+    createdAt: true,
+    reviewedAt: true,
+    reviewer: bookingUserSelect
+  }
+};
+var bookingRefundsInclude = {
+  ...bookingRefundSelect,
+  orderBy: { createdAt: "desc" }
+};
 var mapBookingList = (booking) => ({
   ...booking,
   totalPrice: Number(booking.totalPrice),
@@ -2824,7 +2845,8 @@ var getBookingDetail = async (id, actor) => {
     include: {
       package: bookingPackageDetailSelect,
       user: bookingUserSelect,
-      payments: bookingPaymentsInclude
+      payments: bookingPaymentsInclude,
+      refundRequests: bookingRefundsInclude
     }
   });
   if (!booking) {
@@ -2833,7 +2855,13 @@ var getBookingDetail = async (id, actor) => {
   if (!canManage(booking, actor)) {
     throw new AppError(403, "You are not authorized to view this booking.");
   }
-  return mapBookingList(booking);
+  return {
+    ...mapBookingList(booking),
+    refundRequests: booking.refundRequests.map((request) => ({
+      ...request,
+      refundAmount: request.refundAmount === null ? null : Number(request.refundAmount)
+    }))
+  };
 };
 var issueRefunds = async (bookingId, ctx) => {
   const payments = await prisma.payment.findMany({
@@ -2936,6 +2964,7 @@ var updateBookingStatus = async (id, payload, actor) => {
       "Booking can only be reverted before the travel date."
     );
   }
+  let closedRefunds = { count: 0 };
   const updated = await prisma.$transaction(async (tx) => {
     const result = await tx.booking.updateMany({
       where: { id, status: booking.status },
@@ -2951,6 +2980,15 @@ var updateBookingStatus = async (id, payload, actor) => {
       await tx.payment.updateMany({
         where: { bookingId: id, status: PaymentStatus.INITIATED },
         data: { status: PaymentStatus.CANCELLED }
+      });
+      closedRefunds = await tx.refundRequest.updateMany({
+        where: { bookingId: id, status: RefundRequestStatus.PENDING },
+        data: {
+          status: RefundRequestStatus.REJECTED,
+          reviewNote: "Closed automatically \u2014 the booking was cancelled by the agency and the payment is being refunded in full.",
+          reviewedById: actor.id,
+          reviewedAt: /* @__PURE__ */ new Date()
+        }
       });
     }
     return tx.booking.findUnique({ where: { id } });
@@ -3011,6 +3049,17 @@ var updateBookingStatus = async (id, payload, actor) => {
         )
       )
     );
+    if (closedRefunds.count > 0) {
+      runInBackground([
+        notify(
+          booking.userId,
+          NotificationType.REFUND_REJECTED,
+          "Refund application closed",
+          "Your refund application was closed because the agency cancelled this booking directly \u2014 your payment is being refunded in full.",
+          `/dashboard/bookings/${id}`
+        )
+      ]);
+    }
   }
   return {
     ...updated,
@@ -5839,22 +5888,33 @@ var createRefundRequest = async (userId, payload) => {
     payload.category,
     daysBeforeTravel
   );
-  const created = await prisma.refundRequest.create({
-    data: {
-      bookingId: booking.id,
-      userId,
-      category: payload.category,
-      reason: payload.reason,
-      evidenceUrl: payload.evidenceUrl ?? null,
-      daysBeforeTravel,
-      suggestedPercentage
-    },
-    include: {
-      booking: { include: { package: refundPackageSelect } },
-      user: refundUserSelect,
-      reviewer: refundUserSelect
+  let created;
+  try {
+    created = await prisma.refundRequest.create({
+      data: {
+        bookingId: booking.id,
+        userId,
+        category: payload.category,
+        reason: payload.reason,
+        evidenceUrl: payload.evidenceUrl ?? null,
+        daysBeforeTravel,
+        suggestedPercentage
+      },
+      include: {
+        booking: { include: { package: refundPackageSelect } },
+        user: refundUserSelect,
+        reviewer: refundUserSelect
+      }
+    });
+  } catch (error) {
+    if (error instanceof prismaNamespace_exports.PrismaClientKnownRequestError && error.code === "P2002") {
+      throw new AppError(
+        409,
+        "A refund application already exists for this booking."
+      );
     }
-  });
+    throw error;
+  }
   runInBackground([
     sendRefundReceivedEmail({
       email: booking.user.email,
@@ -5978,6 +6038,12 @@ var decideRefundRequest = async (id, payload, admin) => {
     percentage = Math.min(percentage, request.suggestedPercentage);
   }
   percentage = Math.max(0, Math.min(100, percentage));
+  if (percentage === 0) {
+    throw new AppError(
+      400,
+      "A 0% approval is not allowed \u2014 reject the application with a review note instead."
+    );
+  }
   const settledPayments = await prisma.payment.findMany({
     where: {
       bookingId: request.bookingId,

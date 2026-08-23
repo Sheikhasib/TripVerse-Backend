@@ -81,9 +81,16 @@ model RefundRequest {
 Plus `NotificationType` gains `REFUND_REQUESTED | REFUND_APPROVED | REFUND_REJECTED`.
 Apply with `npx prisma migrate dev --name add_refund_requests`.
 
-> `bookingId` is indexed, not unique: rejected rows stay for audit, so a DB constraint
-> would block re-application forever. The "one live application + max 2 lifetime" rule is
-> service-enforced on create.
+> `bookingId` is indexed, not unique: rejected rows stay for audit, so a plain unique constraint
+> would block re-application forever. "One live application per booking" is instead enforced by a
+> **partial unique index** — `CREATE UNIQUE INDEX ... ON refund_requests("bookingId")
+> WHERE "status" <> 'REJECTED'` (migration `refund_one_live_per_booking`; raw SQL, Prisma cannot
+> model partial indexes). The service's findFirst check stays as the friendly first gate; a lost
+> race surfaces as P2002 → mapped to 409.
+>
+> ⚠️ Because the index lives only in migration SQL, future `prisma migrate dev` diffs will propose
+> `DROP INDEX "refund_requests_bookingId_live_key"` — **delete that line** from any generated
+> migration before applying.
 
 ## State machine change — `booking.service.ts`
 
@@ -93,6 +100,14 @@ In `TRANSITIONS`: `[PAID][CANCELLED]` and `[CONFIRMED][CANCELLED]` switch `allow
 the existing post-commit `issueRefunds` full-amount payout (= policy "agency-initiated →
 100%"). `PENDING → CANCELLED` stays `canManage` (free cancel, no money involved).
 No other transitions change; `requiresTravelDatePassed` logic untouched.
+
+**Orphaned applications**: an out-of-band agency/admin cancel would otherwise wedge a live
+PENDING application forever (approval must flip the booking, which just became impossible —
+every future APPROVE dies on the booking CAS). So the `CANCELLED` branch of
+`updateBookingStatus` auto-closes any PENDING request **inside the same transaction**
+(`PENDING → REJECTED`, system reviewNote "closed automatically … refunded in full",
+`reviewedById = actor`) and fires a best-effort `REFUND_REJECTED` notification to the customer.
+Pure bookkeeping — the direct-cancel path already refunds the customer 100% via spec-23.
 
 ## Refund module — `src/modules/refund/`
 
@@ -107,6 +122,10 @@ No other transitions change; `requiresTravelDatePassed` logic untouched.
 | `GET /api/refunds/:id` | owner or ADMIN | Detail incl. snapshot + decision fields |
 | `PATCH /api/refunds/:id/decision` | ADMIN | `{ action: "APPROVE"\|"REJECT", approvedPercentage?, reviewNote? }` |
 
+Agents have **no read access** to `/api/refunds*` (intentional): refund decisions are
+customer ↔ admin; agents act on paid bookings only through direct cancel, which is already
+the policy's 100% agency-initiated path.
+
 ### Create rules (`createRefundRequest`)
 
 1. Booking exists, belongs to actor, `status ∈ {PAID, CONFIRMED}`.
@@ -118,6 +137,9 @@ No other transitions change; `requiresTravelDatePassed` logic untouched.
    `toUTCMidnight`); `suggestedPercentage` from pure helper
    `suggestRefundPercentage(category, daysBeforeTravel)`:
    docs-backed categories → 100; else ≥30 → 90, 15–29 → 50, 7–14 → 25, ≤6 → 0.
+   **Post-travel applications are allowed**: `daysBeforeTravel` goes negative once the travel
+   date has passed (policy §6 no-show / early-return claims) — standard categories then suggest
+   0 and the admin decides; docs-backed categories still suggest 100.
 5. Best-effort email ("application received") + `REFUND_REQUESTED` notification.
 
 ### Decision rules (`decideRefundRequest`) — APPROVE
@@ -126,6 +148,8 @@ No other transitions change; `requiresTravelDatePassed` logic untouched.
    CHANGE_OF_PLANS additionally `pct = min(pct, suggestedPercentage)` — admin may grant
    *more* only on docs-backed categories. `amount = round(totalPrice × pct / 100)`, capped
    at the sum of the booking's `SUCCESS` non-refunded payments (never exceed money taken).
+   A computed `pct` of **0 is refused with 400** — a meaningful "no" is REJECT with a note
+   (approving 0% would cancel the booking and notify "৳0.00 approved").
 2. **One transaction, two CAS writes**: flip request `PENDING → APPROVED`
    (storing pct/amount/reviewedById/reviewedAt) AND flip booking `{ status: { in: [PAID,
    CONFIRMED] } } → CANCELLED` (+ INITIATED payments → CANCELLED, mirroring
@@ -151,7 +175,8 @@ A repeated decision hits the CAS (count 0 → 409) — never double-applies.
 
 ## Idempotency & safety summary
 
-- One live application per booking (unique) + max 2 lifetime applications.
+- One live application per booking (**partial unique index** on `bookingId WHERE status <> 'REJECTED'`)
+  + max 2 lifetime applications.
 - Approval is double-CAS'd (request PENDING, booking PAID/CONFIRMED) inside one transaction.
 - Money moves only via validated gateway calls after commit; ledger flips only on gateway
   confirmation; totals capped at actually-paid amounts.
