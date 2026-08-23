@@ -576,6 +576,119 @@ describe("refund", () => {
     expect(reapplied.status).toBe(400);
     expect(reapplied.body.message).toMatch(/paid bookings/i);
   });
+
+  it("refuses to approve when nothing was settled on the booking", async () => {
+    const user = await createUser();
+    const admin = await createAdmin();
+    // CONFIRMED without any payment row — reachable via PENDING→CONFIRMED
+    const booking = await createBooking({
+      userId: user.id,
+      status: BookingStatus.CONFIRMED,
+      travelDate: FAR_DATE(),
+    });
+    const userToken = (await loginAs(user)).accessToken;
+    const adminToken = (await loginAs(admin)).accessToken;
+    const created = await createRefundRequestViaApi(booking.id, userToken);
+
+    const res = await decide(created.id, adminToken, { action: "APPROVE" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/settled payment/i);
+    expect(sslcommerzRefund).not.toHaveBeenCalled();
+
+    const requestRow = await prisma.refundRequest.findUnique({
+      where: { id: created.id },
+    });
+    expect(requestRow?.status).toBe(RefundRequestStatus.PENDING);
+  });
+
+  it("retries a failed payout and completes it (admin recovery endpoint)", async () => {
+    const user = await createUser();
+    const admin = await createAdmin();
+    const tourPackage = await createPackage({ price: 1000 });
+    const booking = await createBooking({
+      userId: user.id,
+      packageId: tourPackage.id,
+      travelers: 2,
+      totalPrice: 2000,
+      status: BookingStatus.PAID,
+      travelDate: FAR_DATE(),
+    });
+    const payment = await createPayment(booking.id, {
+      amount: 2000,
+      status: PaymentStatus.SUCCESS,
+    });
+    const adminToken = (await loginAs(admin)).accessToken;
+
+    // approve while the gateway is down → payout FAILED, money still owed
+    sslcommerzRefund.mockRejectedValueOnce(new Error("gateway timeout"));
+    const userToken = (await loginAs(user)).accessToken;
+    const created = await createRefundRequestViaApi(booking.id, userToken);
+    const approved = await decide(created.id, adminToken, { action: "APPROVE" });
+    expect(approved.status).toBe(200);
+    expect(approved.body.data.payout.status).toBe("FAILED");
+    expect(approved.body.data.refundRequest.status).toBe(RefundRequestStatus.APPROVED);
+    expect(approved.body.data.refundRequest.refundAmount).toBe(1800); // 90%
+
+    // gateway back up — retry pays the full owed amount
+    sslcommerzRefund
+      .mockClear()
+      .mockResolvedValueOnce({ APIConnect: "DONE", status: "success", refund_ref_id: "rref-retry" });
+    const retried = await request(app)
+      .post(`/api/refunds/${created.id}/retry-payout`)
+      .set(bearer(adminToken));
+
+    expect(retried.status).toBe(200);
+    expect(retried.body.data.payout.status).toBe("SUCCESS");
+    expect(retried.body.data.payout.refundedTotal).toBe(1800);
+    expect(retried.body.data.refundRequest.status).toBe(RefundRequestStatus.REFUNDED);
+    expect(sslcommerzRefund).toHaveBeenCalledTimes(1);
+    expect(sslcommerzRefund).toHaveBeenCalledWith(
+      expect.objectContaining({ refund_amount: 1800 }),
+    );
+
+    const paymentRow = await prisma.payment.findUnique({ where: { id: payment.id } });
+    expect(paymentRow?.status).toBe(PaymentStatus.REFUNDED);
+    expect(paymentRow?.refundRefId).toBe("rref-retry");
+
+    // terminal state refuses further retries
+    const again = await request(app)
+      .post(`/api/refunds/${created.id}/retry-payout`)
+      .set(bearer(adminToken));
+    expect(again.status).toBe(409);
+    expect(again.body.message).toMatch(/approved/i);
+  });
+
+  it("keeps an already-fully-paid approval REFUNDED when retried late", async () => {
+    const user = await createUser();
+    const admin = await createAdmin();
+    const booking = await createBooking({
+      userId: user.id,
+      status: BookingStatus.PAID,
+      travelDate: FAR_DATE(),
+    });
+    await createPayment(booking.id, { amount: 2000, status: PaymentStatus.SUCCESS });
+    const adminToken = (await loginAs(admin)).accessToken;
+
+    sslcommerzRefund.mockResolvedValueOnce({
+      APIConnect: "DONE",
+      status: "success",
+      refund_ref_id: "rref-late",
+    });
+    const created = await createRefundRequestViaApi(
+      booking.id,
+      (await loginAs(user)).accessToken,
+    );
+    const approved = await decide(created.id, adminToken, { action: "APPROVE" });
+    expect(approved.body.data.payout.status).toBe("SUCCESS");
+
+    sslcommerzRefund.mockClear();
+    const late = await request(app)
+      .post(`/api/refunds/${created.id}/retry-payout`)
+      .set(bearer(adminToken));
+    expect(late.status).toBe(409); // REFUNDED is not APPROVED — no double pay
+    expect(sslcommerzRefund).not.toHaveBeenCalled();
+  });
 });
 
 // Applies through the real endpoint so validation + snapshot paths stay exercised.

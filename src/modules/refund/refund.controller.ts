@@ -92,10 +92,29 @@ const decideRefundRequest = catchAsync(
   },
 );
 
+const retryRefundPayout = catchAsync(
+  async (req: Request, res: Response, next: NextFunction) => {
+    const id = String(req.params.id);
+
+    const result = await refundService.retryRefundPayout(id);
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message:
+        result.payout.status === "SUCCESS"
+          ? "Refund payout completed."
+          : "Refund payout still failing — see payout details.",
+      data: result,
+    });
+  },
+);
+
 export const refundController = {
   createRefundRequest,
   getMyRefundRequests,
   getRefundRequestDetail,
   getAllRefundRequests,
   decideRefundRequest,
+  retryRefundPayout,
 };

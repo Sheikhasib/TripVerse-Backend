@@ -562,6 +562,9 @@ const updateBookingStatus = async (
       // application: leaving it PENDING would wedge it forever (approval has
       // to flip the booking itself, which just became impossible). Pure
       // bookkeeping — the customer is already getting the full direct refund.
+      // NOTE: this system-REJECTED row counts toward refund MAX_APPLICATIONS'
+      // rejectedCount budget. That is fine: the booking is CANCELLED here and
+      // apply() requires PAID/CONFIRMED, so no further application can exist.
       closedRefunds = await tx.refundRequest.updateMany({
         where: { bookingId: id, status: RefundRequestStatus.PENDING },
         data: {

@@ -121,6 +121,12 @@ Pure bookkeeping — the direct-cancel path already refunds the customer 100% vi
 | `GET /api/refunds` | ADMIN | All applications; `?status=` filter + pagination meta |
 | `GET /api/refunds/:id` | owner or ADMIN | Detail incl. snapshot + decision fields |
 | `PATCH /api/refunds/:id/decision` | ADMIN | `{ action: "APPROVE"\|"REJECT", approvedPercentage?, reviewNote? }` |
+| `POST /api/refunds/:id/retry-payout` | ADMIN | Recovery for an APPROVED request whose payout failed — re-runs the loop for the remaining owed amount |
+
+**Zod constraints** (`refund.validation.ts`): `reason` trimmed min **20** / max **2000**
+chars; `evidenceUrl` must be a URL; `reviewNote` trimmed max **1000** chars (required on
+REJECT via superRefine); `approvedPercentage` integer 0–100 (0 still passes Zod — it is
+refused at decision time in the service, see below); query `page ≥ 1`, `limit 1–50`.
 
 Agents have **no read access** to `/api/refunds*` (intentional): refund decisions are
 customer ↔ admin; agents act on paid bookings only through direct cancel, which is already
@@ -131,6 +137,9 @@ the policy's 100% agency-initiated path.
 1. Booking exists, belongs to actor, `status ∈ {PAID, CONFIRMED}`.
 2. No live request on the booking (`status ∈ {PENDING, APPROVED, REFUNDED}` blocks);
    re-application allowed only when the latest is REJECTED and rejectedCount < 2.
+   Rules 1–2 + the insert run in **one `$transaction` with a booking re-read** so a
+   concurrent agency cancel (auto-closing applications) can't wedge a PENDING row onto
+   a CANCELLED booking; the partial unique index backstops any residual race.
 3. `evidenceUrl` **required** for MEDICAL_EMERGENCY, BEREAVEMENT, VISA_REJECTION,
    FORCE_MAJEURE (docs-backed categories); optional for CHANGE_OF_PLANS.
 4. Snapshot: `daysBeforeTravel = floor((travelDate − now)/86400s)` (UTC-midnight math like
@@ -149,23 +158,41 @@ the policy's 100% agency-initiated path.
    *more* only on docs-backed categories. `amount = round(totalPrice × pct / 100)`, capped
    at the sum of the booking's `SUCCESS` non-refunded payments (never exceed money taken).
    A computed `pct` of **0 is refused with 400** — a meaningful "no" is REJECT with a note
-   (approving 0% would cancel the booking and notify "৳0.00 approved").
+   (approving 0% would cancel the booking and notify "৳0.00 approved"). Likewise a computed
+   **`amount` ≤ 0 is refused with 409**: CONFIRMED bookings can exist with no settled payment
+   (PENDING→CONFIRMED needs no money), and approving those would be the same absurdity.
 2. **One transaction, two CAS writes**: flip request `PENDING → APPROVED`
    (storing pct/amount/reviewedById/reviewedAt) AND flip booking `{ status: { in: [PAID,
    CONFIRMED] } } → CANCELLED` (+ INITIATED payments → CANCELLED, mirroring
    `updateBookingStatus`). Either count ≠ expected → throw 409 (e.g. agency cancelled
    meanwhile, or double decision) — transaction rolls back, nothing half-applied.
-3. After commit: **payout loop** over `SUCCESS, refundCompletedAt: null` payments in
-   `createdAt` order — deduct sequentially from `amount`; last payment may be partially
-   refunded (`refund_amount` < original). Each success CAS-flips that payment to `REFUNDED`
-   (same pattern as `issueRefunds`). Gateway failure leaves that payment `SUCCESS` +
-   `refundInitiatedAt` (spec-23 semantics) and does **not** unapprove anything.
+3. After commit: **payout loop** (shared `runPayout` helper, also used by retry-payout)
+   over `SUCCESS, refundCompletedAt: null` payments in `createdAt` order — deduct
+   sequentially from `amount`; last payment may be partially refunded (`refund_amount` <
+   original). Each success CAS-flips that payment to `REFUNDED` (same pattern as
+   `issueRefunds`). Gateway failure leaves that payment `SUCCESS` + `refundInitiatedAt`
+   (spec-23 semantics) and does **not** unapprove anything.
 4. When every selected payment ended `REFUNDED` → request `APPROVED → REFUNDED`. If any
-   failed → request **stays APPROVED** (money owed; manual retry later — same posture as
-   spec 23's deferred retry endpoint). Response always carries
+   failed → request **stays APPROVED** (money owed; recover via the retry-payout endpoint
+   below). Response always carries
    `refundRequest` + `payout: { status: "SUCCESS"|"FAILED", message? }`.
 5. Best-effort `REFUND_APPROVED` notification + decision email; payout confirmation reuses
    `sendRefundEmail` when refs exist.
+
+### Payout retry — `POST /api/refunds/:id/retry-payout` (ADMIN)
+
+Spec 23 deferred its generic `POST /api/payments/:id/retry-refund`; this is the scoped,
+implemented replacement for the refund-request workflow. For an APPROVED request whose
+payout failed:
+
+1. Guards: request exists (404); `status === APPROVED` (409 otherwise); `refundAmount > 0`.
+2. Owed = `refundAmount − sum(REFUNDED payments on the booking)` (every REFUNDED row belongs
+   to this payout — pre-approval refunds cannot exist). Owed ≤ 0 → settle up: flip
+   APPROVED → REFUNDED, return `payout SUCCESS` with `refundedTotal: 0`.
+3. Otherwise re-run the shared payout loop for `owed` and return `{ refundRequest, payout }`.
+4. ⚠️ spec-23 caveat applies: a "failed" attempt may still be PROCESSING gateway-side —
+   confirm with the gateway/bank before retrying soon after a failure (admin tool).
+5. Success fires best-effort `sendRefundEmail` + "Refund paid out" notification.
 
 ### Decision rules — REJECT
 

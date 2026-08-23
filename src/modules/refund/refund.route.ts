@@ -51,4 +51,14 @@ router.patch(
   refundController.decideRefundRequest,
 );
 
+// Admin recovery for an APPROVED request whose gateway payout failed —
+// re-runs the payout loop for the remaining owed amount (spec 23's deferred
+// retry endpoint, scoped to the refund-request workflow).
+router.post(
+  "/:id/retry-payout",
+  auth(Role.ADMIN),
+  validateRequest({ params: refundValidations.refundParamsSchema }),
+  refundController.retryRefundPayout,
+);
+
 export const refundRoutes = router;

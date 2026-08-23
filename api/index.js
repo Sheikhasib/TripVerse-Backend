@@ -5861,28 +5861,6 @@ var createRefundRequest = async (userId, payload) => {
       "Refunds can only be requested for paid bookings."
     );
   }
-  const latest = await prisma.refundRequest.findFirst({
-    where: { bookingId: booking.id },
-    orderBy: { createdAt: "desc" }
-  });
-  if (latest && latest.status !== RefundRequestStatus.REJECTED) {
-    throw new AppError(
-      409,
-      "A refund application already exists for this booking."
-    );
-  }
-  const rejectedCount = await prisma.refundRequest.count({
-    where: {
-      bookingId: booking.id,
-      status: RefundRequestStatus.REJECTED
-    }
-  });
-  if (rejectedCount >= MAX_APPLICATIONS) {
-    throw new AppError(
-      409,
-      "The refund application limit has been reached for this booking."
-    );
-  }
   const daysBeforeTravel = daysUntilTravel(booking.travelDate);
   const suggestedPercentage = suggestRefundPercentage(
     payload.category,
@@ -5890,21 +5868,54 @@ var createRefundRequest = async (userId, payload) => {
   );
   let created;
   try {
-    created = await prisma.refundRequest.create({
-      data: {
-        bookingId: booking.id,
-        userId,
-        category: payload.category,
-        reason: payload.reason,
-        evidenceUrl: payload.evidenceUrl ?? null,
-        daysBeforeTravel,
-        suggestedPercentage
-      },
-      include: {
-        booking: { include: { package: refundPackageSelect } },
-        user: refundUserSelect,
-        reviewer: refundUserSelect
+    created = await prisma.$transaction(async (tx) => {
+      const freshBooking = await tx.booking.findUnique({
+        where: { id: booking.id }
+      });
+      if (!freshBooking || freshBooking.status !== BookingStatus.PAID && freshBooking.status !== BookingStatus.CONFIRMED) {
+        throw new AppError(
+          409,
+          "The booking is no longer eligible for a refund application."
+        );
       }
+      const latest = await tx.refundRequest.findFirst({
+        where: { bookingId: booking.id },
+        orderBy: { createdAt: "desc" }
+      });
+      if (latest && latest.status !== RefundRequestStatus.REJECTED) {
+        throw new AppError(
+          409,
+          "A refund application already exists for this booking."
+        );
+      }
+      const rejectedCount = await tx.refundRequest.count({
+        where: {
+          bookingId: booking.id,
+          status: RefundRequestStatus.REJECTED
+        }
+      });
+      if (rejectedCount >= MAX_APPLICATIONS) {
+        throw new AppError(
+          409,
+          "The refund application limit has been reached for this booking."
+        );
+      }
+      return tx.refundRequest.create({
+        data: {
+          bookingId: booking.id,
+          userId,
+          category: payload.category,
+          reason: payload.reason,
+          evidenceUrl: payload.evidenceUrl ?? null,
+          daysBeforeTravel,
+          suggestedPercentage
+        },
+        include: {
+          booking: { include: { package: refundPackageSelect } },
+          user: refundUserSelect,
+          reviewer: refundUserSelect
+        }
+      });
     });
   } catch (error) {
     if (error instanceof prismaNamespace_exports.PrismaClientKnownRequestError && error.code === "P2002") {
@@ -5986,6 +5997,69 @@ var getRefundRequestDetail = async (id, actor) => {
   }
   return mapRefundRequest(request);
 };
+var runPayout = async (bookingId, requestId, amount) => {
+  const settledPayments = await prisma.payment.findMany({
+    where: {
+      bookingId,
+      status: PaymentStatus.SUCCESS,
+      refundCompletedAt: null
+    },
+    orderBy: { createdAt: "asc" }
+  });
+  let remaining = amount;
+  let refundedTotal = 0;
+  let firstFailure = null;
+  const refundRefs = [];
+  for (const payment of settledPayments) {
+    if (remaining <= 0) break;
+    const slice = Math.min(remaining, Number(payment.amount));
+    if (!payment.bankTranId) {
+      firstFailure ??= "Payment has no bank transaction id to refund against.";
+      await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: { refundInitiatedAt: /* @__PURE__ */ new Date() }
+      });
+      continue;
+    }
+    try {
+      const gateway = await sslcommerzRefund({
+        bank_tran_id: payment.bankTranId,
+        refund_amount: slice,
+        refund_remarks: `Refund request ${requestId} - TripVerse`,
+        refe_id: requestId
+      });
+      const flippedPayment = await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: {
+          status: PaymentStatus.REFUNDED,
+          refundRefId: gateway.refund_ref_id ?? payment.refundRefId ?? null,
+          refundCompletedAt: /* @__PURE__ */ new Date()
+        }
+      });
+      if (flippedPayment.count === 0) continue;
+      refundedTotal += slice;
+      remaining -= slice;
+      if (gateway.refund_ref_id) refundRefs.push(gateway.refund_ref_id);
+    } catch (error) {
+      firstFailure ??= error instanceof Error ? error.message : String(error);
+      await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: { refundInitiatedAt: /* @__PURE__ */ new Date() }
+      });
+    }
+  }
+  const payout = !firstFailure && remaining <= 0 ? { status: "SUCCESS", refundedTotal } : {
+    status: "FAILED",
+    message: firstFailure ?? "Payout could not be completed."
+  };
+  if (payout.status === "SUCCESS") {
+    await prisma.refundRequest.updateMany({
+      where: { id: requestId, status: RefundRequestStatus.APPROVED },
+      data: { status: RefundRequestStatus.REFUNDED }
+    });
+  }
+  return { payout, refundRefs };
+};
 var decideRefundRequest = async (id, payload, admin) => {
   const request = await prisma.refundRequest.findUnique({
     where: { id },
@@ -5997,6 +6071,9 @@ var decideRefundRequest = async (id, payload, admin) => {
   });
   if (!request) {
     throw new AppError(404, "Refund request not found.");
+  }
+  if (request.status !== RefundRequestStatus.PENDING) {
+    throw new AppError(409, "This refund request has already been decided.");
   }
   if (payload.action === "REJECT") {
     const flipped = await prisma.refundRequest.updateMany({
@@ -6060,6 +6137,12 @@ var decideRefundRequest = async (id, payload, admin) => {
     Math.round(Number(request.booking.totalPrice) * (percentage / 100)),
     paidTotal
   );
+  if (amount <= 0) {
+    throw new AppError(
+      409,
+      "There is no settled payment on this booking to refund \u2014 reject the application with a review note instead."
+    );
+  }
   const approved = await prisma.$transaction(async (tx) => {
     const requestFlip = await tx.refundRequest.updateMany({
       where: { id: request.id, status: RefundRequestStatus.PENDING },
@@ -6091,55 +6174,11 @@ var decideRefundRequest = async (id, payload, admin) => {
     });
     return true;
   });
-  let remaining = amount;
-  let refundedTotal = 0;
-  let firstFailure = null;
-  const refundRefs = [];
-  for (const payment of settledPayments) {
-    if (remaining <= 0) break;
-    const slice = Math.min(remaining, Number(payment.amount));
-    if (!payment.bankTranId) {
-      firstFailure ??= "Payment has no bank transaction id to refund against.";
-      await prisma.payment.updateMany({
-        where: { id: payment.id, status: PaymentStatus.SUCCESS },
-        data: { refundInitiatedAt: /* @__PURE__ */ new Date() }
-      });
-      continue;
-    }
-    try {
-      const gateway = await sslcommerzRefund({
-        bank_tran_id: payment.bankTranId,
-        refund_amount: slice,
-        refund_remarks: `Refund request ${request.id} - TripVerse`,
-        refe_id: request.id
-      });
-      const flippedPayment = await prisma.payment.updateMany({
-        where: { id: payment.id, status: PaymentStatus.SUCCESS },
-        data: {
-          status: PaymentStatus.REFUNDED,
-          refundRefId: gateway.refund_ref_id ?? payment.refundRefId ?? null,
-          refundCompletedAt: /* @__PURE__ */ new Date()
-        }
-      });
-      if (flippedPayment.count === 0) continue;
-      refundedTotal += slice;
-      remaining -= slice;
-      if (gateway.refund_ref_id) refundRefs.push(gateway.refund_ref_id);
-    } catch (error) {
-      firstFailure ??= error instanceof Error ? error.message : String(error);
-      await prisma.payment.updateMany({
-        where: { id: payment.id, status: PaymentStatus.SUCCESS },
-        data: { refundInitiatedAt: /* @__PURE__ */ new Date() }
-      });
-    }
-  }
-  const payout = !firstFailure && remaining <= 0 ? { status: "SUCCESS", refundedTotal } : { status: "FAILED", message: firstFailure ?? "Payout could not be completed." };
-  if (payout.status === "SUCCESS") {
-    await prisma.refundRequest.updateMany({
-      where: { id: request.id, status: RefundRequestStatus.APPROVED },
-      data: { status: RefundRequestStatus.REFUNDED }
-    });
-  }
+  const { payout, refundRefs } = await runPayout(
+    request.bookingId,
+    request.id,
+    amount
+  );
   runInBackground([
     sendRefundDecisionEmail({
       email: request.booking.user.email,
@@ -6156,7 +6195,7 @@ var decideRefundRequest = async (id, payload, admin) => {
         name: request.booking.user.name,
         packageTitle: request.booking.package.title,
         travelDate: request.booking.travelDate,
-        amount: refundedTotal,
+        amount: payout.refundedTotal,
         refundRefId: refundRefs[0]
       })
     ] : [],
@@ -6174,13 +6213,82 @@ var decideRefundRequest = async (id, payload, admin) => {
   });
   return { refundRequest: mapRefundRequest(fresh), payout };
 };
+var retryRefundPayout = async (id) => {
+  const request = await prisma.refundRequest.findUnique({
+    where: { id },
+    include: {
+      booking: {
+        include: { package: { select: { title: true } }, user: refundUserSelect }
+      }
+    }
+  });
+  if (!request) {
+    throw new AppError(404, "Refund request not found.");
+  }
+  if (request.status !== RefundRequestStatus.APPROVED) {
+    throw new AppError(
+      409,
+      "Only an approved refund request has a payout waiting to be retried."
+    );
+  }
+  if (!request.refundAmount || Number(request.refundAmount) <= 0) {
+    throw new AppError(409, "This approval recorded no payout amount.");
+  }
+  const refundedSoFar = await prisma.payment.aggregate({
+    where: { bookingId: request.bookingId, status: PaymentStatus.REFUNDED },
+    _sum: { amount: true }
+  });
+  const owed = Number(request.refundAmount) - Number(refundedSoFar._sum.amount ?? 0);
+  if (owed <= 0) {
+    await prisma.refundRequest.updateMany({
+      where: { id: request.id, status: RefundRequestStatus.APPROVED },
+      data: { status: RefundRequestStatus.REFUNDED }
+    });
+    const settled = await prisma.refundRequest.findUnique({
+      where: { id },
+      include: refundInclude
+    });
+    return {
+      refundRequest: mapRefundRequest(settled),
+      payout: { status: "SUCCESS", refundedTotal: 0 }
+    };
+  }
+  const { payout, refundRefs } = await runPayout(request.bookingId, id, owed);
+  if (payout.status === "SUCCESS") {
+    runInBackground([
+      ...refundRefs.length > 0 ? [
+        sendRefundEmail({
+          email: request.booking.user.email,
+          name: request.booking.user.name,
+          packageTitle: request.booking.package.title,
+          travelDate: request.booking.travelDate,
+          amount: payout.refundedTotal,
+          refundRefId: refundRefs[0]
+        })
+      ] : [],
+      notify(
+        request.userId,
+        NotificationType.REFUND_APPROVED,
+        "Refund paid out",
+        `Your approved refund of \u09F3${Number(request.refundAmount).toFixed(2)} for "${request.booking.package.title}" has been paid out to your original payment method.`,
+        `/dashboard/bookings/${request.bookingId}`
+      )
+    ]);
+  }
+  const fresh = await prisma.refundRequest.findUnique({
+    where: { id },
+    include: refundInclude
+  });
+  return { refundRequest: mapRefundRequest(fresh), payout };
+};
 var refundService = {
   suggestRefundPercentage,
   createRefundRequest,
   getMyRefundRequests,
   getAllRefundRequests,
   getRefundRequestDetail,
-  decideRefundRequest
+  decideRefundRequest,
+  retryRefundPayout
 };
 
 // src/modules/refund/refund.controller.ts
@@ -6255,12 +6363,25 @@ var decideRefundRequest2 = catchAsync(
     });
   }
 );
+var retryRefundPayout2 = catchAsync(
+  async (req, res, next) => {
+    const id = String(req.params.id);
+    const result = await refundService.retryRefundPayout(id);
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus16.OK,
+      message: result.payout.status === "SUCCESS" ? "Refund payout completed." : "Refund payout still failing \u2014 see payout details.",
+      data: result
+    });
+  }
+);
 var refundController = {
   createRefundRequest: createRefundRequest2,
   getMyRefundRequests: getMyRefundRequests2,
   getRefundRequestDetail: getRefundRequestDetail2,
   getAllRefundRequests: getAllRefundRequests2,
-  decideRefundRequest: decideRefundRequest2
+  decideRefundRequest: decideRefundRequest2,
+  retryRefundPayout: retryRefundPayout2
 };
 
 // src/modules/refund/refund.validation.ts
@@ -6351,6 +6472,12 @@ router14.patch(
     body: refundValidations.decisionSchema
   }),
   refundController.decideRefundRequest
+);
+router14.post(
+  "/:id/retry-payout",
+  auth_default(Role.ADMIN),
+  validateRequest_default({ params: refundValidations.refundParamsSchema }),
+  refundController.retryRefundPayout
 );
 var refundRoutes = router14;
 

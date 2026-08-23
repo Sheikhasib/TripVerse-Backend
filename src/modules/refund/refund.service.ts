@@ -124,31 +124,6 @@ const createRefundRequest = async (
     );
   }
 
-  // One LIVE application per booking; a rejection frees exactly one re-apply,
-  // up to MAX_APPLICATIONS lifetime rejections.
-  const latest = await prisma.refundRequest.findFirst({
-    where: { bookingId: booking.id },
-    orderBy: { createdAt: "desc" },
-  });
-  if (latest && latest.status !== RefundRequestStatus.REJECTED) {
-    throw new AppError(
-      409,
-      "A refund application already exists for this booking.",
-    );
-  }
-  const rejectedCount = await prisma.refundRequest.count({
-    where: {
-      bookingId: booking.id,
-      status: RefundRequestStatus.REJECTED,
-    },
-  });
-  if (rejectedCount >= MAX_APPLICATIONS) {
-    throw new AppError(
-      409,
-      "The refund application limit has been reached for this booking.",
-    );
-  }
-
   // Policy snapshot — immutable after create; decisions read this, never recompute.
   const daysBeforeTravel = daysUntilTravel(booking.travelDate);
   const suggestedPercentage = suggestRefundPercentage(
@@ -156,27 +131,73 @@ const createRefundRequest = async (
     daysBeforeTravel,
   );
 
+  // Eligibility checks + insert run in one transaction that re-reads the
+  // booking: a concurrent agency cancel (auto-closes live applications and
+  // flips the booking) either lands entirely before us (we see CANCELLED and
+  // refuse) or entirely after our commit. The residual read-committed window
+  // is accepted — a wedged row would still be recoverable via admin REJECT.
   let created;
   try {
-    created = await prisma.refundRequest.create({
-      data: {
-        bookingId: booking.id,
-        userId,
-        category: payload.category,
-        reason: payload.reason,
-        evidenceUrl: payload.evidenceUrl ?? null,
-        daysBeforeTravel,
-        suggestedPercentage,
-      },
-      include: {
-        booking: { include: { package: refundPackageSelect } },
-        user: refundUserSelect,
-        reviewer: refundUserSelect,
-      },
+    created = await prisma.$transaction(async (tx) => {
+      const freshBooking = await tx.booking.findUnique({
+        where: { id: booking.id },
+      });
+      if (
+        !freshBooking ||
+        (freshBooking.status !== BookingStatus.PAID &&
+          freshBooking.status !== BookingStatus.CONFIRMED)
+      ) {
+        throw new AppError(
+          409,
+          "The booking is no longer eligible for a refund application.",
+        );
+      }
+
+      // One LIVE application per booking; a rejection frees exactly one re-apply,
+      // up to MAX_APPLICATIONS lifetime rejections.
+      const latest = await tx.refundRequest.findFirst({
+        where: { bookingId: booking.id },
+        orderBy: { createdAt: "desc" },
+      });
+      if (latest && latest.status !== RefundRequestStatus.REJECTED) {
+        throw new AppError(
+          409,
+          "A refund application already exists for this booking.",
+        );
+      }
+      const rejectedCount = await tx.refundRequest.count({
+        where: {
+          bookingId: booking.id,
+          status: RefundRequestStatus.REJECTED,
+        },
+      });
+      if (rejectedCount >= MAX_APPLICATIONS) {
+        throw new AppError(
+          409,
+          "The refund application limit has been reached for this booking.",
+        );
+      }
+
+      return tx.refundRequest.create({
+        data: {
+          bookingId: booking.id,
+          userId,
+          category: payload.category,
+          reason: payload.reason,
+          evidenceUrl: payload.evidenceUrl ?? null,
+          daysBeforeTravel,
+          suggestedPercentage,
+        },
+        include: {
+          booking: { include: { package: refundPackageSelect } },
+          user: refundUserSelect,
+          reviewer: refundUserSelect,
+        },
+      });
     });
   } catch (error) {
-    // The findFirst above can race a concurrent application — the partial
-    // unique index (one live row per booking) is the real gatekeeper.
+    // Lost a race against a concurrent application — the partial unique index
+    // (one live row per booking) is the real gatekeeper.
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
@@ -277,6 +298,101 @@ const getRefundRequestDetail = async (id: string, actor: RefundActor) => {
   return mapRefundRequest(request);
 };
 
+// ── Gateway payout (shared by approve + retry-payout) ────────────────────────
+// Allocates `amount` across the booking's settled, not-yet-refunded payments
+// (oldest first; partial slices allowed). Each success CAS-flips that payment
+// to REFUNDED; a failure leaves it SUCCESS with `refundInitiatedAt` as the
+// retry surface. A complete payout flips the request APPROVED → REFUNDED; a
+// shortfall keeps it APPROVED so the owed money stays visible.
+//
+// ⚠️ spec-23 caveat: a "failed" attempt may still be PROCESSING gateway-side —
+// re-running too soon can over-refund. The retry endpoint below is an admin
+// recovery tool; production should confirm with the gateway/bank first.
+const runPayout = async (
+  bookingId: string,
+  requestId: string,
+  amount: number,
+): Promise<{ payout: IPayoutOutcome; refundRefs: string[] }> => {
+  const settledPayments = await prisma.payment.findMany({
+    where: {
+      bookingId,
+      status: PaymentStatus.SUCCESS,
+      refundCompletedAt: null,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  let remaining = amount;
+  let refundedTotal = 0;
+  let firstFailure: string | null = null;
+  const refundRefs: string[] = [];
+
+  for (const payment of settledPayments) {
+    if (remaining <= 0) break;
+    const slice = Math.min(remaining, Number(payment.amount));
+
+    if (!payment.bankTranId) {
+      firstFailure ??= "Payment has no bank transaction id to refund against.";
+      await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: { refundInitiatedAt: new Date() },
+      });
+      continue;
+    }
+
+    try {
+      const gateway = await sslcommerzRefund({
+        bank_tran_id: payment.bankTranId,
+        refund_amount: slice,
+        refund_remarks: `Refund request ${requestId} - TripVerse`,
+        refe_id: requestId,
+      });
+
+      // CAS: only a still-SUCCESS payment flips to REFUNDED — a concurrent
+      // refund loses the race (count 0) and is a no-op.
+      const flippedPayment = await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: {
+          status: PaymentStatus.REFUNDED,
+          refundRefId: gateway.refund_ref_id ?? payment.refundRefId ?? null,
+          refundCompletedAt: new Date(),
+        },
+      });
+
+      if (flippedPayment.count === 0) continue;
+      refundedTotal += slice;
+      remaining -= slice;
+      if (gateway.refund_ref_id) refundRefs.push(gateway.refund_ref_id);
+    } catch (error) {
+      firstFailure ??= error instanceof Error ? error.message : String(error);
+      // Money hasn't left the gateway — leave SUCCESS, mark for retry.
+      await prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.SUCCESS },
+        data: { refundInitiatedAt: new Date() },
+      });
+    }
+  }
+
+  // Fully paid out (or nothing owed) → terminal state. Any shortfall keeps the
+  // request APPROVED so the owed money stays visible for manual retry.
+  const payout: IPayoutOutcome =
+    !firstFailure && remaining <= 0
+      ? { status: "SUCCESS", refundedTotal }
+      : {
+          status: "FAILED",
+          message: firstFailure ?? "Payout could not be completed.",
+        };
+
+  if (payout.status === "SUCCESS") {
+    await prisma.refundRequest.updateMany({
+      where: { id: requestId, status: RefundRequestStatus.APPROVED },
+      data: { status: RefundRequestStatus.REFUNDED },
+    });
+  }
+
+  return { payout, refundRefs };
+};
+
 // ── Decision (ADMIN) ─────────────────────────────────────────────────────────
 const decideRefundRequest = async (
   id: string,
@@ -294,6 +410,11 @@ const decideRefundRequest = async (
 
   if (!request) {
     throw new AppError(404, "Refund request not found.");
+  }
+  if (request.status !== RefundRequestStatus.PENDING) {
+    // Fast-path message for an already-decided request — the per-branch CAS
+    // below stays the authoritative race gate.
+    throw new AppError(409, "This refund request has already been decided.");
   }
 
   if (payload.action === "REJECT") {
@@ -367,11 +488,20 @@ const decideRefundRequest = async (
     (sum, p) => sum + Number(p.amount),
     0,
   );
-  // Never approve more than the money actually taken.
+  // Never approve more than the money actually taken. A computed amount of 0
+  // means either nothing was settled (CONFIRMED bookings can exist unpaid) or
+  // the total rounds to zero — either way an approval would be the "৳0.00
+  // approved" absurdity, so refuse it.
   const amount = Math.min(
     Math.round(Number(request.booking.totalPrice) * (percentage / 100)),
     paidTotal,
   );
+  if (amount <= 0) {
+    throw new AppError(
+      409,
+      "There is no settled payment on this booking to refund — reject the application with a review note instead.",
+    );
+  }
 
   // One transaction, two CAS writes: the approval and the cancellation commit
   // together or not at all (e.g. an agency cancel racing in → 409 rollback).
@@ -414,70 +544,11 @@ const decideRefundRequest = async (
   });
 
   // ── Gateway payout (after commit; mirrors booking.service issueRefunds) ──
-  let remaining = amount;
-  let refundedTotal = 0;
-  let firstFailure: string | null = null;
-  const refundRefs: string[] = [];
-
-  for (const payment of settledPayments) {
-    if (remaining <= 0) break;
-    const slice = Math.min(remaining, Number(payment.amount));
-
-    if (!payment.bankTranId) {
-      firstFailure ??= "Payment has no bank transaction id to refund against.";
-      await prisma.payment.updateMany({
-        where: { id: payment.id, status: PaymentStatus.SUCCESS },
-        data: { refundInitiatedAt: new Date() },
-      });
-      continue;
-    }
-
-    try {
-      const gateway = await sslcommerzRefund({
-        bank_tran_id: payment.bankTranId,
-        refund_amount: slice,
-        refund_remarks: `Refund request ${request.id} - TripVerse`,
-        refe_id: request.id,
-      });
-
-      // CAS: only a still-SUCCESS payment flips to REFUNDED — a concurrent
-      // refund loses the race (count 0) and is a no-op.
-      const flippedPayment = await prisma.payment.updateMany({
-        where: { id: payment.id, status: PaymentStatus.SUCCESS },
-        data: {
-          status: PaymentStatus.REFUNDED,
-          refundRefId: gateway.refund_ref_id ?? payment.refundRefId ?? null,
-          refundCompletedAt: new Date(),
-        },
-      });
-
-      if (flippedPayment.count === 0) continue;
-      refundedTotal += slice;
-      remaining -= slice;
-      if (gateway.refund_ref_id) refundRefs.push(gateway.refund_ref_id);
-    } catch (error) {
-      firstFailure ??= error instanceof Error ? error.message : String(error);
-      // Money hasn't left the gateway — leave SUCCESS, mark for retry.
-      await prisma.payment.updateMany({
-        where: { id: payment.id, status: PaymentStatus.SUCCESS },
-        data: { refundInitiatedAt: new Date() },
-      });
-    }
-  }
-
-  // Fully paid out (or nothing owed) → terminal state. Any shortfall keeps the
-  // request APPROVED so the owed money stays visible for manual retry.
-  const payout: IPayoutOutcome =
-    !firstFailure && remaining <= 0
-      ? { status: "SUCCESS", refundedTotal }
-      : { status: "FAILED", message: firstFailure ?? "Payout could not be completed." };
-
-  if (payout.status === "SUCCESS") {
-    await prisma.refundRequest.updateMany({
-      where: { id: request.id, status: RefundRequestStatus.APPROVED },
-      data: { status: RefundRequestStatus.REFUNDED },
-    });
-  }
+  const { payout, refundRefs } = await runPayout(
+    request.bookingId,
+    request.id,
+    amount,
+  );
 
   runInBackground([
     sendRefundDecisionEmail({
@@ -496,7 +567,7 @@ const decideRefundRequest = async (
             name: request.booking.user.name,
             packageTitle: request.booking.package.title,
             travelDate: request.booking.travelDate,
-            amount: refundedTotal,
+            amount: payout.refundedTotal,
             refundRefId: refundRefs[0],
           }),
         ]
@@ -517,6 +588,94 @@ const decideRefundRequest = async (
   return { refundRequest: mapRefundRequest(fresh)!, payout };
 };
 
+// ── Payout retry (ADMIN) ─────────────────────────────────────────────────────
+// An APPROVED request whose gateway payout failed leaves owed money visible
+// but unpaid. This re-runs the shared allocation loop for the remaining amount
+// — the approval, the booking cancellation and the approved percentage are
+// never touched. See runPayout's note on gateway PROCESSING races before
+// retrying shortly after a failure.
+const retryRefundPayout = async (
+  id: string,
+): Promise<{ refundRequest: Record<string, unknown>; payout: IPayoutOutcome }> => {
+  const request = await prisma.refundRequest.findUnique({
+    where: { id },
+    include: {
+      booking: {
+        include: { package: { select: { title: true } }, user: refundUserSelect },
+      },
+    },
+  });
+  if (!request) {
+    throw new AppError(404, "Refund request not found.");
+  }
+  if (request.status !== RefundRequestStatus.APPROVED) {
+    throw new AppError(
+      409,
+      "Only an approved refund request has a payout waiting to be retried.",
+    );
+  }
+  if (!request.refundAmount || Number(request.refundAmount) <= 0) {
+    throw new AppError(409, "This approval recorded no payout amount.");
+  }
+
+  // Owed = approved amount minus what has already landed as REFUNDED payments.
+  // Refunds before approval cannot exist (approval requires the booking still
+  // PAID/CONFIRMED with untouched payments), so every REFUNDED row on this
+  // booking belongs to this request's payout.
+  const refundedSoFar = await prisma.payment.aggregate({
+    where: { bookingId: request.bookingId, status: PaymentStatus.REFUNDED },
+    _sum: { amount: true },
+  });
+  const owed = Number(request.refundAmount) - Number(refundedSoFar._sum.amount ?? 0);
+  if (owed <= 0) {
+    // Everything already landed (e.g. a retry raced a slow success) — settle up.
+    await prisma.refundRequest.updateMany({
+      where: { id: request.id, status: RefundRequestStatus.APPROVED },
+      data: { status: RefundRequestStatus.REFUNDED },
+    });
+    const settled = await prisma.refundRequest.findUnique({
+      where: { id },
+      include: refundInclude,
+    });
+    return {
+      refundRequest: mapRefundRequest(settled)!,
+      payout: { status: "SUCCESS", refundedTotal: 0 },
+    };
+  }
+
+  const { payout, refundRefs } = await runPayout(request.bookingId, id, owed);
+
+  if (payout.status === "SUCCESS") {
+    runInBackground([
+      ...(refundRefs.length > 0
+        ? [
+            sendRefundEmail({
+              email: request.booking.user.email,
+              name: request.booking.user.name,
+              packageTitle: request.booking.package.title,
+              travelDate: request.booking.travelDate,
+              amount: payout.refundedTotal,
+              refundRefId: refundRefs[0],
+            }),
+          ]
+        : []),
+      notify(
+        request.userId,
+        NotificationType.REFUND_APPROVED,
+        "Refund paid out",
+        `Your approved refund of ৳${Number(request.refundAmount).toFixed(2)} for "${request.booking.package.title}" has been paid out to your original payment method.`,
+        `/dashboard/bookings/${request.bookingId}`,
+      ),
+    ]);
+  }
+
+  const fresh = await prisma.refundRequest.findUnique({
+    where: { id },
+    include: refundInclude,
+  });
+  return { refundRequest: mapRefundRequest(fresh)!, payout };
+};
+
 export const refundService = {
   suggestRefundPercentage,
   createRefundRequest,
@@ -524,4 +683,5 @@ export const refundService = {
   getAllRefundRequests,
   getRefundRequestDetail,
   decideRefundRequest,
+  retryRefundPayout,
 };
