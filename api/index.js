@@ -95,6 +95,9 @@ var config = {
   // stays correct even if NODE_ENV is accidentally copied as "development"
   // onto production — which silently routed payment redirects to localhost.
   is_production: env.NODE_ENV === "production" || env.VERCEL_ENV === "production",
+  // Serverless: one DB connection per instance. Any other host is a long-running
+  // server, where a pool of 1 would serialise every request.
+  is_vercel: Boolean(env.VERCEL_ENV),
   // Frontend origins for CORS + payment redirects. Localhost always wins for
   // local testing; production uses the Vercel frontend URL, falling back to the
   // backend URL so the API stays reachable even before the UI is deployed.
@@ -606,7 +609,10 @@ var globalErrorHandler_default = globalErrorHandler;
 // src/lib/prisma.ts
 import { PrismaPg } from "@prisma/adapter-pg";
 var connectionString = config_default.database_url;
-var adapter = new PrismaPg({ connectionString, max: 1 });
+var adapter = new PrismaPg({
+  connectionString,
+  max: config_default.is_vercel ? 1 : 10
+});
 var prisma = new PrismaClient({ adapter });
 
 // src/modules/auth/auth.route.ts
@@ -3053,22 +3059,25 @@ var updateBookingStatus = async (id, payload, actor) => {
     ]);
   }
   if (to === BookingStatus.CANCELLED) {
-    const recipients = [];
+    const customerLink = `/dashboard/bookings/${id}`;
+    const agentLink = `/dashboard/agent/bookings/${id}`;
+    const recipients = /* @__PURE__ */ new Map();
     if (actor.id === booking.userId) {
-      recipients.push(booking.package.agentId);
+      recipients.set(booking.package.agentId, agentLink);
     } else if (actor.role === Role.AGENT && booking.package.agentId === actor.id) {
-      recipients.push(booking.userId);
+      recipients.set(booking.userId, customerLink);
     } else if (actor.role === Role.ADMIN) {
-      recipients.push(booking.userId, booking.package.agentId);
+      recipients.set(booking.userId, customerLink);
+      recipients.set(booking.package.agentId, agentLink);
     }
     runInBackground(
-      [...new Set(recipients)].map(
-        (recipientId) => notify(
+      [...recipients].map(
+        ([recipientId, link]) => notify(
           recipientId,
           NotificationType.BOOKING_CANCELLED,
           "Booking cancelled",
           `The booking for "${booking.package.title}" has been cancelled.`,
-          `/dashboard/bookings/${id}`
+          link
         )
       )
     );
@@ -4000,7 +4009,8 @@ var getMyPackages = async (userId, query) => {
   const skip = (page - 1) * limit;
   const where = {
     agentId: userId,
-    isDeleted: false
+    isDeleted: false,
+    ...query.status ? { status: query.status } : {}
   };
   const [data, total] = await Promise.all([
     prisma.tourPackage.findMany({
@@ -5099,20 +5109,29 @@ var getAgentDashboard = async (userId, days) => {
   };
 };
 var getUserDashboard = async (userId, days = 30) => {
-  const [totalBookings, totalSpend, upcoming, bookingsByStatus, revenueOverTime] = await Promise.all([
+  const upcomingWhere = {
+    userId,
+    status: {
+      in: [BookingStatus.PENDING, BookingStatus.PAID, BookingStatus.CONFIRMED]
+    },
+    travelDate: { gt: /* @__PURE__ */ new Date() }
+  };
+  const [
+    totalBookings,
+    totalSpend,
+    upcomingCount,
+    upcoming,
+    bookingsByStatus,
+    revenueOverTime
+  ] = await Promise.all([
     prisma.booking.count({ where: { userId } }),
     prisma.booking.aggregate({
       _sum: { totalPrice: true },
       where: { userId, status: BookingStatus.COMPLETED }
     }),
+    prisma.booking.count({ where: upcomingWhere }),
     prisma.booking.findMany({
-      where: {
-        userId,
-        status: {
-          in: [BookingStatus.PENDING, BookingStatus.PAID, BookingStatus.CONFIRMED]
-        },
-        travelDate: { gt: /* @__PURE__ */ new Date() }
-      },
+      where: upcomingWhere,
       select: {
         id: true,
         travelDate: true,
@@ -5130,7 +5149,7 @@ var getUserDashboard = async (userId, days = 30) => {
   return {
     totalBookings,
     totalSpend: toNumber(totalSpend._sum.totalPrice),
-    upcomingCount: upcoming.length,
+    upcomingCount,
     upcoming: upcoming.map((b) => ({
       ...b,
       totalPrice: Number(b.totalPrice)

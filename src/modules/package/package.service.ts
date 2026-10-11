@@ -244,6 +244,7 @@ const getMyPackages = async (userId: string, query: IInternalPackageQuery) => {
   const where: Prisma.TourPackageWhereInput = {
     agentId: userId,
     isDeleted: false,
+    ...(query.status ? { status: query.status } : {}),
   };
 
   const [data, total] = await Promise.all([

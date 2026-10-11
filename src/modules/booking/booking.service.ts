@@ -639,26 +639,30 @@ runInBackground([
   }
 
   if (to === BookingStatus.CANCELLED) {
-    const recipients: string[] = [];
+    // links are role-specific: agents have their own booking route
+    const customerLink = `/dashboard/bookings/${id}`;
+    const agentLink = `/dashboard/agent/bookings/${id}`;
+    const recipients = new Map<string, string>();
     if (actor.id === booking.userId) {
-      recipients.push(booking.package.agentId);
+      recipients.set(booking.package.agentId, agentLink);
     } else if (
       actor.role === Role.AGENT &&
       booking.package.agentId === actor.id
     ) {
-      recipients.push(booking.userId);
+      recipients.set(booking.userId, customerLink);
     } else if (actor.role === Role.ADMIN) {
-      recipients.push(booking.userId, booking.package.agentId);
+      recipients.set(booking.userId, customerLink);
+      recipients.set(booking.package.agentId, agentLink);
     }
 
     runInBackground(
-      [...new Set(recipients)].map((recipientId) =>
+      [...recipients].map(([recipientId, link]) =>
         notify(
           recipientId,
           NotificationType.BOOKING_CANCELLED,
           "Booking cancelled",
           `The booking for "${booking.package.title}" has been cancelled.`,
-          `/dashboard/bookings/${id}`,
+          link,
         ),
       ),
     );

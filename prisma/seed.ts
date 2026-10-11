@@ -45,6 +45,11 @@ const main = async () => {
   await prisma.$transaction(
     async (tx) => {
       // ── 1. Reset (dependency order so FKs never block) ─────────────────
+      await tx.refundRequest.deleteMany();
+      await tx.blogComment.deleteMany();
+      await tx.wishlistItem.deleteMany();
+      await tx.notification.deleteMany();
+      await tx.refreshToken.deleteMany();
       await tx.review.deleteMany();
       await tx.payment.deleteMany();
       await tx.booking.deleteMany();

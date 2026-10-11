@@ -103,6 +103,10 @@ const config = {
   is_production:
     env.NODE_ENV === "production" || env.VERCEL_ENV === "production",
 
+  // Serverless: one DB connection per instance. Any other host is a long-running
+  // server, where a pool of 1 would serialise every request.
+  is_vercel: Boolean(env.VERCEL_ENV),
+
   // Frontend origins for CORS + payment redirects. Localhost always wins for
   // local testing; production uses the Vercel frontend URL, falling back to the
   // backend URL so the API stays reachable even before the UI is deployed.

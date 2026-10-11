@@ -221,21 +221,30 @@ const getUserDashboard = async (
   userId: string,
   days = 30,
 ): Promise<IUserDashboard> => {
-  const [totalBookings, totalSpend, upcoming, bookingsByStatus, revenueOverTime] =
-    await Promise.all([
+  const upcomingWhere = {
+    userId,
+    status: {
+      in: [BookingStatus.PENDING, BookingStatus.PAID, BookingStatus.CONFIRMED],
+    },
+    travelDate: { gt: new Date() },
+  };
+
+  const [
+    totalBookings,
+    totalSpend,
+    upcomingCount,
+    upcoming,
+    bookingsByStatus,
+    revenueOverTime,
+  ] = await Promise.all([
       prisma.booking.count({ where: { userId } }),
       prisma.booking.aggregate({
         _sum: { totalPrice: true },
         where: { userId, status: BookingStatus.COMPLETED },
       }),
+      prisma.booking.count({ where: upcomingWhere }),
       prisma.booking.findMany({
-        where: {
-          userId,
-          status: {
-            in: [BookingStatus.PENDING, BookingStatus.PAID, BookingStatus.CONFIRMED],
-          },
-          travelDate: { gt: new Date() },
-        },
+        where: upcomingWhere,
         select: {
           id: true,
           travelDate: true,
@@ -254,7 +263,7 @@ const getUserDashboard = async (
   return {
     totalBookings,
     totalSpend: toNumber(totalSpend._sum.totalPrice),
-    upcomingCount: upcoming.length,
+    upcomingCount,
     upcoming: upcoming.map((b) => ({
       ...b,
       totalPrice: Number(b.totalPrice),

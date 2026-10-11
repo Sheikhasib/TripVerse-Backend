@@ -251,6 +251,28 @@ describe("booking", () => {
     expect(res.body.data.status).toBe(BookingStatus.CANCELLED);
   });
 
+  it("sends the agent (not the customer route) to the agent booking page on cancel", async () => {
+    const user = await createUser();
+    const agent = await createAgent();
+    const tourPackage = await createPackage({ agentId: agent.id });
+    const booking = await createBooking({
+      userId: user.id,
+      packageId: tourPackage.id,
+      status: BookingStatus.PENDING,
+    });
+
+    const { accessToken } = await loginAs(user);
+    const res = await cancel(booking.id, accessToken);
+    expect(res.status).toBe(200);
+
+    await vi.waitFor(async () => {
+      const note = await prisma.notification.findFirst({
+        where: { userId: agent.id, type: "BOOKING_CANCELLED" },
+      });
+      expect(note?.link).toBe(`/dashboard/agent/bookings/${booking.id}`);
+    });
+  });
+
   it("reverting a CONFIRMED booking with settled money goes back to PAID, not PENDING", async () => {
     const user = await createUser();
     const admin = await createAdmin();

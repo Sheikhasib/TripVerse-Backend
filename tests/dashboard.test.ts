@@ -106,4 +106,22 @@ describe("dashboard", () => {
     expect(res.body.data.totalSpend).toBe(3000);
     expect(res.body.data.upcomingCount).toBe(1);
   });
+
+  it("upcomingCount is the real total, not capped at the 5 listed", async () => {
+    const user = await createUser();
+    const { accessToken } = await loginAs(user);
+    for (let i = 1; i <= 7; i++) {
+      await createBooking({
+        userId: user.id,
+        status: BookingStatus.PENDING,
+        travelDate: new Date(Date.now() + (i + 1) * 24 * 60 * 60 * 1000),
+      });
+    }
+
+    const res = await request(app)
+      .get("/api/dashboard/user")
+      .set(bearer(accessToken));
+    expect(res.body.data.upcomingCount).toBe(7);
+    expect(res.body.data.upcoming).toHaveLength(5);
+  });
 });
