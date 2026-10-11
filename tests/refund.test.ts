@@ -286,6 +286,36 @@ describe("refund", () => {
     expect(bookingRow?.status).toBe(BookingStatus.CANCELLED);
   });
 
+  it("computes the refund in paisa, not whole taka (90% of 1001.01 = 900.91)", async () => {
+    sslcommerzRefund.mockResolvedValueOnce({
+      APIConnect: "DONE",
+      status: "success",
+      refund_ref_id: "rref-paisa",
+    });
+
+    const user = await createUser();
+    const admin = await createAdmin();
+    const booking = await createBooking({
+      userId: user.id,
+      travelers: 1,
+      totalPrice: 1001.01,
+      status: BookingStatus.PAID,
+      travelDate: FAR_DATE(),
+    });
+    await createPayment(booking.id, { amount: 1001.01, status: PaymentStatus.SUCCESS });
+    const userToken = (await loginAs(user)).accessToken;
+    const adminToken = (await loginAs(admin)).accessToken;
+
+    const created = await apply(userToken, applicationBody(booking.id));
+    const res = await decide(created.body.data.id, adminToken, { action: "APPROVE" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.refundRequest.refundAmount).toBe(900.91);
+    expect(sslcommerzRefund).toHaveBeenCalledWith(
+      expect.objectContaining({ refund_amount: 900.91 }),
+    );
+  });
+
   it("allocates the approved total across several settled payments (partial last)", async () => {
     sslcommerzRefund.mockResolvedValue({
       APIConnect: "DONE",

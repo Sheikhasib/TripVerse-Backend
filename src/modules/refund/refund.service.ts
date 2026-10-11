@@ -49,6 +49,13 @@ export const suggestRefundPercentage = (
   return 0;
 };
 
+// Money is handled in integer paisa so percentages never lose or invent a
+// fraction of a taka; Decimal → paisa → back to taka only at the gateway/DB edge.
+const toPaisa = (amount: Prisma.Decimal | number | string): number =>
+  new Prisma.Decimal(amount).mul(100).round().toNumber();
+
+const fromPaisa = (paisa: number): number => paisa / 100;
+
 const toUTCMidnight = (date: Date) =>
   new Date(
     Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
@@ -322,14 +329,14 @@ const runPayout = async (
     orderBy: { createdAt: "asc" },
   });
 
-  let remaining = amount;
-  let refundedTotal = 0;
+  let remaining = toPaisa(amount);
+  let refundedTotal = 0; // paisa
   let firstFailure: string | null = null;
   const refundRefs: string[] = [];
 
   for (const payment of settledPayments) {
     if (remaining <= 0) break;
-    const slice = Math.min(remaining, Number(payment.amount));
+    const slice = Math.min(remaining, toPaisa(payment.amount));
 
     if (!payment.bankTranId) {
       firstFailure ??= "Payment has no bank transaction id to refund against.";
@@ -343,7 +350,7 @@ const runPayout = async (
     try {
       const gateway = await sslcommerzRefund({
         bank_tran_id: payment.bankTranId,
-        refund_amount: slice,
+        refund_amount: fromPaisa(slice),
         refund_remarks: `Refund request ${requestId} - TripVerse`,
         refe_id: requestId,
       });
@@ -377,7 +384,7 @@ const runPayout = async (
   // request APPROVED so the owed money stays visible for manual retry.
   const payout: IPayoutOutcome =
     !firstFailure && remaining <= 0
-      ? { status: "SUCCESS", refundedTotal }
+      ? { status: "SUCCESS", refundedTotal: fromPaisa(refundedTotal) }
       : {
           status: "FAILED",
           message: firstFailure ?? "Payout could not be completed.",
@@ -484,18 +491,16 @@ const decideRefundRequest = async (
     },
     orderBy: { createdAt: "asc" },
   });
-  const paidTotal = settledPayments.reduce(
-    (sum, p) => sum + Number(p.amount),
-    0,
-  );
+  const paidPaisa = settledPayments.reduce((sum, p) => sum + toPaisa(p.amount), 0);
   // Never approve more than the money actually taken. A computed amount of 0
   // means either nothing was settled (CONFIRMED bookings can exist unpaid) or
   // the total rounds to zero — either way an approval would be the "৳0.00
   // approved" absurdity, so refuse it.
-  const amount = Math.min(
-    Math.round(Number(request.booking.totalPrice) * (percentage / 100)),
-    paidTotal,
+  const amountPaisa = Math.min(
+    Math.round((toPaisa(request.booking.totalPrice) * percentage) / 100),
+    paidPaisa,
   );
+  const amount = fromPaisa(amountPaisa);
   if (amount <= 0) {
     throw new AppError(
       409,
@@ -652,8 +657,10 @@ const retryRefundPayout = async (
     where: { bookingId: request.bookingId, status: PaymentStatus.REFUNDED },
     _sum: { amount: true },
   });
-  const owed = Number(request.refundAmount) - Number(refundedSoFar._sum.amount ?? 0);
-  if (owed <= 0) {
+  const owedPaisa =
+    toPaisa(request.refundAmount) - toPaisa(refundedSoFar._sum.amount ?? 0);
+  const owed = fromPaisa(owedPaisa);
+  if (owedPaisa <= 0) {
     // Everything already landed (e.g. a retry raced a slow success) — settle up.
     await prisma.refundRequest.updateMany({
       where: { id: request.id, status: RefundRequestStatus.APPROVED },

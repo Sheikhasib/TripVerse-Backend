@@ -201,7 +201,7 @@ const createBooking = async (userId: string, payload: ICreateBooking) => {
 
   // totalPrice is computed server-side from the package's current price —
   // anything the client sends is ignored.
-  const totalPrice = Number(tourPackage.price) * travelers;
+  const totalPrice = new Prisma.Decimal(tourPackage.price).mul(travelers);
 
   const created = await prisma.$transaction(async (tx) => {
     const existing = await tx.booking.findFirst({
@@ -251,7 +251,7 @@ runInBackground([
         packageTitle: tourPackage.title,
         travelDate,
         travelers,
-        totalPrice,
+        totalPrice: Number(totalPrice),
         status: BookingStatus.PENDING,
       }),
     ]);

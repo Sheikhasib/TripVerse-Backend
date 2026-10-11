@@ -2712,7 +2712,7 @@ var createBooking = async (userId, payload) => {
   if (!tourPackage || tourPackage.isDeleted || tourPackage.status !== PackageStatus.APPROVED) {
     throw new AppError(409, "Package is not available for booking.");
   }
-  const totalPrice = Number(tourPackage.price) * travelers;
+  const totalPrice = new prismaNamespace_exports.Decimal(tourPackage.price).mul(travelers);
   const created = await prisma.$transaction(async (tx) => {
     const existing = await tx.booking.findFirst({
       where: {
@@ -2752,7 +2752,7 @@ var createBooking = async (userId, payload) => {
         packageTitle: tourPackage.title,
         travelDate,
         travelers,
-        totalPrice,
+        totalPrice: Number(totalPrice),
         status: BookingStatus.PENDING
       })
     ]);
@@ -4193,7 +4193,7 @@ import { z as z8 } from "zod";
 var titleSchema = z8.string({ required_error: "Title is required" }).trim().min(3, "Title must be at least 3 characters").max(200, "Title must be at most 200 characters");
 var descriptionSchema = z8.string({ required_error: "Description is required" }).trim().min(10, "Description must be at least 10 characters").max(1e4, "Description must be at most 10000 characters");
 var locationSchema = z8.string({ required_error: "Location is required" }).trim().min(2, "Location must be at least 2 characters").max(200, "Location must be at most 200 characters");
-var priceSchema = z8.number({ required_error: "Price is required" }).positive("Price must be a positive number").refine((val) => Math.round(val * 100) / 100 === val, {
+var priceSchema = z8.number({ required_error: "Price is required" }).positive("Price must be a positive number").max(499999999e-2, "Price must be at most 4,999,999.99").refine((val) => Math.round(val * 100) / 100 === val, {
   message: "Price must have at most 2 decimal places"
 });
 var durationSchema = z8.number({ required_error: "Duration is required" }).int("Duration must be a whole number of days").min(1, "Duration must be at least 1 day");
@@ -5860,6 +5860,8 @@ var suggestRefundPercentage = (category, daysBeforeTravel) => {
   if (daysBeforeTravel >= 7) return 25;
   return 0;
 };
+var toPaisa2 = (amount) => new prismaNamespace_exports.Decimal(amount).mul(100).round().toNumber();
+var fromPaisa = (paisa) => paisa / 100;
 var toUTCMidnight2 = (date) => new Date(
   Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
 );
@@ -6047,13 +6049,13 @@ var runPayout = async (bookingId, requestId, amount) => {
     },
     orderBy: { createdAt: "asc" }
   });
-  let remaining = amount;
+  let remaining = toPaisa2(amount);
   let refundedTotal = 0;
   let firstFailure = null;
   const refundRefs = [];
   for (const payment of settledPayments) {
     if (remaining <= 0) break;
-    const slice = Math.min(remaining, Number(payment.amount));
+    const slice = Math.min(remaining, toPaisa2(payment.amount));
     if (!payment.bankTranId) {
       firstFailure ??= "Payment has no bank transaction id to refund against.";
       await prisma.payment.updateMany({
@@ -6065,7 +6067,7 @@ var runPayout = async (bookingId, requestId, amount) => {
     try {
       const gateway = await sslcommerzRefund({
         bank_tran_id: payment.bankTranId,
-        refund_amount: slice,
+        refund_amount: fromPaisa(slice),
         refund_remarks: `Refund request ${requestId} - TripVerse`,
         refe_id: requestId
       });
@@ -6089,7 +6091,7 @@ var runPayout = async (bookingId, requestId, amount) => {
       });
     }
   }
-  const payout = !firstFailure && remaining <= 0 ? { status: "SUCCESS", refundedTotal } : {
+  const payout = !firstFailure && remaining <= 0 ? { status: "SUCCESS", refundedTotal: fromPaisa(refundedTotal) } : {
     status: "FAILED",
     message: firstFailure ?? "Payout could not be completed."
   };
@@ -6170,14 +6172,12 @@ var decideRefundRequest = async (id, payload, admin) => {
     },
     orderBy: { createdAt: "asc" }
   });
-  const paidTotal = settledPayments.reduce(
-    (sum, p) => sum + Number(p.amount),
-    0
+  const paidPaisa = settledPayments.reduce((sum, p) => sum + toPaisa2(p.amount), 0);
+  const amountPaisa = Math.min(
+    Math.round(toPaisa2(request.booking.totalPrice) * percentage / 100),
+    paidPaisa
   );
-  const amount = Math.min(
-    Math.round(Number(request.booking.totalPrice) * (percentage / 100)),
-    paidTotal
-  );
+  const amount = fromPaisa(amountPaisa);
   if (amount <= 0) {
     throw new AppError(
       409,
@@ -6294,8 +6294,9 @@ var retryRefundPayout = async (id) => {
     where: { bookingId: request.bookingId, status: PaymentStatus.REFUNDED },
     _sum: { amount: true }
   });
-  const owed = Number(request.refundAmount) - Number(refundedSoFar._sum.amount ?? 0);
-  if (owed <= 0) {
+  const owedPaisa = toPaisa2(request.refundAmount) - toPaisa2(refundedSoFar._sum.amount ?? 0);
+  const owed = fromPaisa(owedPaisa);
+  if (owedPaisa <= 0) {
     await prisma.refundRequest.updateMany({
       where: { id: request.id, status: RefundRequestStatus.APPROVED },
       data: { status: RefundRequestStatus.REFUNDED }

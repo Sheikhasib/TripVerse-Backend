@@ -3,6 +3,7 @@ import app from "../src/app";
 import { prisma } from "../src/lib/prisma";
 import { BookingStatus, PaymentStatus } from "../generated/prisma/enums";
 import { AppError } from "../src/utils/appError";
+import { packageValidations } from "../src/modules/package/package.validation";
 import {
   bearer,
   createAdmin,
@@ -45,6 +46,36 @@ const cancel = (id: string, token: string) =>
     .send({ status: BookingStatus.CANCELLED });
 
 describe("booking", () => {
+  it("computes totalPrice with Decimal math (no float drift)", async () => {
+    const user = await createUser();
+    const tourPackage = await createPackage({ price: 0.1 });
+    const { accessToken } = await loginAs(user);
+
+    const res = await request(app)
+      .post("/api/bookings")
+      .set(bearer(accessToken))
+      .send({ packageId: tourPackage.id, travelDate: futureIso(), travelers: 3 });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.totalPrice).toBe(0.3); // float 0.1 * 3 = 0.30000000000000004
+    const row = await prisma.booking.findUnique({ where: { id: res.body.data.id } });
+    expect(row?.totalPrice.toString()).toBe("0.3");
+  });
+
+  it("rejects a package price that could overflow Decimal(10,2) at 20 travelers", () => {
+    const { createPackageSchema } = packageValidations;
+    const base = {
+      title: "Valid package title",
+      description: "A sufficiently long package description for validation.",
+      location: "Cox's Bazar",
+      duration: 3,
+      categoryId: "c1",
+      images: ["https://example.com/a.jpg"],
+    };
+    expect(createPackageSchema.safeParse({ ...base, price: 5_000_000 }).success).toBe(false);
+    expect(createPackageSchema.safeParse({ ...base, price: 4_999_999.99 }).success).toBe(true);
+  });
+
   it("computes totalPrice server-side (client input ignored)", async () => {
     const user = await createUser();
     const tourPackage = await createPackage({ price: 1000 });

@@ -21,6 +21,8 @@ const locationSchema = z
 const priceSchema = z
   .number({ required_error: "Price is required" })
   .positive("Price must be a positive number")
+  // price × 20 travelers (the booking max) must fit Decimal(10,2) = 99,999,999.99
+  .max(4_999_999.99, "Price must be at most 4,999,999.99")
   .refine((val) => Math.round(val * 100) / 100 === val, {
     message: "Price must have at most 2 decimal places",
   });
