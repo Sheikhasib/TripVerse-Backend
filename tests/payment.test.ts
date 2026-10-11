@@ -12,19 +12,20 @@ import {
 
 // The SSLCommerz gateway is mocked at the lib boundary — no real init/validate
 // call ever happens. Email senders are stubbed too so nothing is actually sent.
-const { sslcommerzInit, sslcommerzValidate, emails } = vi.hoisted(() => ({
+const { sslcommerzInit, sslcommerzValidate, sslcommerzRefund, emails } = vi.hoisted(() => ({
+  sslcommerzRefund: vi.fn(),
   sslcommerzInit: vi.fn(),
   sslcommerzValidate: vi.fn(),
   emails: {
     sendContactNotification: vi.fn(async () => {}),
     sendContactAutoReply: vi.fn(async () => {}),
-    sendBookingEmail: vi.fn(async () => {}),
+    sendBookingEmail: vi.fn(async (_args: { status: string }) => {}),
     sendRefundEmail: vi.fn(async () => {}),
   },
 }));
 
 vi.mock("../src/lib/sslcommerz", () => ({
-  sslcommerzRefund: vi.fn(),
+  sslcommerzRefund,
   sslcommerzInit,
   sslcommerzValidate,
   generateTranId: vi.fn(
@@ -70,6 +71,9 @@ describe("payment", () => {
   beforeEach(() => {
     sslcommerzInit.mockReset();
     sslcommerzValidate.mockReset();
+    sslcommerzRefund.mockReset();
+    emails.sendBookingEmail.mockClear();
+    emails.sendRefundEmail.mockClear();
     sslcommerzInit.mockResolvedValue({
       status: "SUCCESS",
       GatewayPageURL: "https://sandbox.sslcommerz.com/gwprocess/v4/checkout.php?token=x",
@@ -234,6 +238,113 @@ describe("payment", () => {
 
     const payment = await prisma.payment.findUnique({ where: { tranId } });
     expect(payment?.status).toBe(PaymentStatus.FAILED);
+  });
+
+  it("confirm + IPN arriving together settle once and send one email", async () => {
+    const { booking, session } = await settledBooking();
+    const tranId = session.body.data.tranId;
+    sslcommerzValidate.mockResolvedValue(validatorFor(tranId));
+
+    const [a, b] = await Promise.all([
+      request(app)
+        .post(`/api/payments/confirm?bookingId=${booking.id}&tranId=${tranId}&status=success`)
+        .send(gatewayBody),
+      request(app)
+        .post(`/api/payments/ipn?bookingId=${booking.id}&tranId=${tranId}`)
+        .send(gatewayBody),
+    ]);
+    expect(a.status).toBe(302);
+    expect(b.status).toBe(200);
+
+    expect((await prisma.payment.findUnique({ where: { tranId } }))?.status).toBe(
+      PaymentStatus.SUCCESS,
+    );
+    expect((await prisma.booking.findUnique({ where: { id: booking.id } }))?.status).toBe(
+      BookingStatus.PAID,
+    );
+    const paidEmails = emails.sendBookingEmail.mock.calls.filter(
+      ([arg]) => arg.status === BookingStatus.PAID,
+    );
+    expect(paidEmails).toHaveLength(1);
+  });
+
+  it("a late fail or cancel callback cannot overwrite a settled payment or PAID booking", async () => {
+    const { booking, session } = await settledBooking();
+    const tranId = session.body.data.tranId;
+    sslcommerzValidate.mockResolvedValue(validatorFor(tranId));
+
+    await request(app)
+      .post(`/api/payments/ipn?bookingId=${booking.id}&tranId=${tranId}`)
+      .send(gatewayBody);
+
+    await request(app)
+      .post(`/api/payments/confirm?bookingId=${booking.id}&tranId=${tranId}&status=fail`)
+      .send({ status: "FAILED" });
+    await request(app)
+      .post(`/api/payments/confirm?bookingId=${booking.id}&tranId=${tranId}&status=cancel`)
+      .send({ status: "CANCELLED", fail_status: "CANCELLED" });
+
+    expect((await prisma.payment.findUnique({ where: { tranId } }))?.status).toBe(
+      PaymentStatus.SUCCESS,
+    );
+    expect((await prisma.booking.findUnique({ where: { id: booking.id } }))?.status).toBe(
+      BookingStatus.PAID,
+    );
+  });
+
+  it("a late fail callback does not overwrite an already CANCELLED row", async () => {
+    const { booking, session } = await settledBooking();
+    const tranId = session.body.data.tranId;
+
+    await request(app)
+      .post(`/api/payments/confirm?bookingId=${booking.id}&tranId=${tranId}&status=cancel`)
+      .send({ status: "CANCELLED", fail_status: "CANCELLED" });
+    await request(app)
+      .post(`/api/payments/confirm?bookingId=${booking.id}&tranId=${tranId}&status=fail`)
+      .send({ status: "FAILED" });
+
+    expect((await prisma.payment.findUnique({ where: { tranId } }))?.status).toBe(
+      PaymentStatus.CANCELLED,
+    );
+  });
+
+  it("refunds automatically when payment completes after the booking was cancelled", async () => {
+    const { booking, session } = await settledBooking();
+    const tranId = session.body.data.tranId;
+    sslcommerzValidate.mockResolvedValue(validatorFor(tranId));
+    sslcommerzRefund.mockResolvedValue({
+      APIConnect: "DONE",
+      status: "success",
+      refund_ref_id: "refund-ref-1",
+    });
+
+    // the customer cancels while still on the gateway page
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: { status: BookingStatus.CANCELLED },
+    });
+
+    await request(app)
+      .post(`/api/payments/ipn?bookingId=${booking.id}&tranId=${tranId}`)
+      .send(gatewayBody);
+
+    expect(sslcommerzRefund).toHaveBeenCalledTimes(1);
+    expect(sslcommerzRefund.mock.calls[0]?.[0]).toMatchObject({
+      bank_tran_id: gatewayBody.bank_tran_id,
+      refund_amount: 2000,
+    });
+    const payment = await prisma.payment.findUnique({ where: { tranId } });
+    expect(payment?.status).toBe(PaymentStatus.REFUNDED);
+    expect(payment?.refundCompletedAt).toBeTruthy();
+    expect((await prisma.booking.findUnique({ where: { id: booking.id } }))?.status).toBe(
+      BookingStatus.CANCELLED,
+    );
+    // no misleading "payment received" email for a cancelled booking
+    expect(
+      emails.sendBookingEmail.mock.calls.filter(
+        ([arg]) => arg.status === BookingStatus.PAID,
+      ),
+    ).toHaveLength(0);
   });
 
   it("marks a cancel callback payment as CANCELLED", async () => {

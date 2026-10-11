@@ -6,6 +6,7 @@ import { SslcommerzInitResult, SslcommerzValidationResult, generateTranId, sslco
 import { AppError } from "../../utils/appError";
 import { sendBookingEmail } from "../../utils/email";
 import { runInBackground } from "../../utils/background";
+import { issueRefunds } from "../booking/booking.service";
 import { IGatewayResult, IPaymentCreateRequest, IPaymentGatewayOutcome } from "./payment.interface";
 
 // The gateway POSTs to these URLs server-to-server, so the host must be
@@ -177,38 +178,45 @@ const processGatewayResult = async (
     return { paymentStatus: PaymentStatus.FAILED, bookingStatus: null, changed: false };
   }
 
-  if (payment.status === PaymentStatus.SUCCESS) {
+  // Settled (or refunded) rows are final — a replayed or late callback can't move them.
+  if (
+    payment.status === PaymentStatus.SUCCESS ||
+    payment.status === PaymentStatus.REFUNDED
+  ) {
     return {
-      paymentStatus: PaymentStatus.SUCCESS,
+      paymentStatus: payment.status,
       bookingStatus: payment.booking.status,
       changed: false,
     };
   }
 
+  // Moves the row only while it is still INITIATED (compare-and-set). A late
+  // fail/cancel callback therefore can never overwrite SUCCESS, and the
+  // outcome reports whatever the row really ended up as.
+  const closeSession = async (to: PaymentStatus): Promise<IPaymentGatewayOutcome> => {
+    const { count } = await prisma.payment.updateMany({
+      where: { id: payment.id, status: PaymentStatus.INITIATED },
+      data: { status: to },
+    });
+    const [current, booking] = await Promise.all([
+      prisma.payment.findUnique({ where: { id: payment.id }, select: { status: true } }),
+      prisma.booking.findUnique({ where: { id: bookingId }, select: { status: true } }),
+    ]);
+    return {
+      paymentStatus: current?.status ?? to,
+      bookingStatus: booking?.status ?? null,
+      changed: count > 0,
+    };
+  };
+
   // Cancel callback — the shopper abandoned checkout, no charge was made.
   if (result.fail_status === "CANCELLED" || result.status === "CANCELLED") {
-    const updated = await prisma.payment.update({
-      where: { id: payment.id },
-      data: { status: PaymentStatus.CANCELLED },
-    });
-    return {
-      paymentStatus: updated.status,
-      bookingStatus: payment.booking.status,
-      changed: updated.status !== payment.status,
-    };
+    return closeSession(PaymentStatus.CANCELLED);
   }
 
   // No val_id means the gateway reported a failure (fail_url) — nothing to verify.
   if (!result.val_id) {
-    const updated = await prisma.payment.update({
-      where: { id: payment.id },
-      data: { status: PaymentStatus.FAILED },
-    });
-    return {
-      paymentStatus: updated.status,
-      bookingStatus: payment.booking.status,
-      changed: updated.status !== payment.status,
-    };
+    return closeSession(PaymentStatus.FAILED);
   }
 
   // Success path: verify server-side and only then mark the booking as paid.
@@ -218,20 +226,19 @@ const processGatewayResult = async (
   });
 
   if (!isValid) {
-    const updated = await prisma.payment.update({
-      where: { id: payment.id },
-      data: { status: PaymentStatus.FAILED },
-    });
-    return {
-      paymentStatus: updated.status,
-      bookingStatus: payment.booking.status,
-      changed: true,
-    };
+    return closeSession(PaymentStatus.FAILED);
   }
 
+  // Compare-and-set on both rows. Confirm and IPN can arrive together: only the
+  // call whose payment update matches (count 1) settles and sends the email.
   const settled = await prisma.$transaction(async (tx) => {
-    const updated = await tx.payment.update({
-      where: { id: payment.id },
+    const paymentCas = await tx.payment.updateMany({
+      where: {
+        id: payment.id,
+        status: {
+          in: [PaymentStatus.INITIATED, PaymentStatus.CANCELLED, PaymentStatus.FAILED],
+        },
+      },
       data: {
         status: PaymentStatus.SUCCESS,
         valId: result.val_id,
@@ -240,34 +247,65 @@ const processGatewayResult = async (
         paidAt: new Date(),
       },
     });
+    if (paymentCas.count === 0) return { won: false, bookingPaid: false };
 
-    // compare-and-set: only a still-PENDING booking becomes PAID; a booking that
-    // was concurrently confirmed or cancelled keeps its state, the money stays on.
-    await tx.booking.updateMany({
+    // only a still-PENDING booking becomes PAID; one that was cancelled or
+    // confirmed meanwhile keeps its state.
+    const bookingCas = await tx.booking.updateMany({
       where: { id: bookingId, status: BookingStatus.PENDING },
       data: { status: BookingStatus.PAID },
     });
-
-    return updated;
+    return { won: true, bookingPaid: bookingCas.count > 0 };
   });
 
-  const bookingAfter = await prisma.booking.findUnique({ where: { id: bookingId } });
-
-  // best-effort "payment received" email — never fails the callback
-  runInBackground([
-    sendBookingEmail({
-      email: payment.booking.user.email,
-      name: payment.booking.user.name,
-      packageTitle: payment.booking.package.title,
-      travelDate: payment.booking.travelDate,
-      travelers: payment.booking.travelers,
-      totalPrice: Number(payment.amount),
-      status: BookingStatus.PAID,
-    }),
+  const [paymentAfter, bookingAfter] = await Promise.all([
+    prisma.payment.findUnique({ where: { id: payment.id }, select: { status: true } }),
+    prisma.booking.findUnique({ where: { id: bookingId }, select: { status: true } }),
   ]);
 
+  if (!settled.won) {
+    // the other callback settled first — it owns the email and any refund
+    return {
+      paymentStatus: paymentAfter?.status ?? PaymentStatus.SUCCESS,
+      bookingStatus: bookingAfter?.status ?? null,
+      changed: false,
+    };
+  }
+
+  const user = payment.booking.user;
+  const packageTitle = payment.booking.package.title;
+
+  if (settled.bookingPaid) {
+    // best-effort "payment received" email — never fails the callback
+    runInBackground([
+      sendBookingEmail({
+        email: user.email,
+        name: user.name,
+        packageTitle,
+        travelDate: payment.booking.travelDate,
+        travelers: payment.booking.travelers,
+        totalPrice: Number(payment.amount),
+        status: BookingStatus.PAID,
+      }),
+    ]);
+  } else if (bookingAfter?.status === BookingStatus.CANCELLED) {
+    // Money arrived for a booking that was already cancelled: give it back
+    // right away rather than keeping it.
+    await issueRefunds(bookingId, {
+      email: user.email,
+      name: user.name,
+      packageTitle,
+      travelDate: payment.booking.travelDate,
+    });
+  }
+
+  const finalPayment = await prisma.payment.findUnique({
+    where: { id: payment.id },
+    select: { status: true },
+  });
+
   return {
-    paymentStatus: settled.status,
+    paymentStatus: finalPayment?.status ?? PaymentStatus.SUCCESS,
     bookingStatus: bookingAfter?.status ?? null,
     changed: true,
   };

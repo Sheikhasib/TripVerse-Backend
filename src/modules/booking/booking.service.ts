@@ -397,14 +397,14 @@ const getBookingDetail = async (id: string, actor: BookingActor) => {
 // the SSLCommerz Refund API; the ledger flips to REFUNDED ONLY after the gateway
 // confirms — a failed refund leaves the payment SUCCESS with refundInitiatedAt
 // set so a later retry/manual action can find it (spec 23).
-type RefundContext = {
+export type RefundContext = {
   email: string;
   name: string;
   packageTitle: string;
   travelDate: Date;
 };
 
-const issueRefunds = async (
+export const issueRefunds = async (
   bookingId: string,
   ctx: RefundContext,
 ): Promise<IRefundOutcome | null> => {

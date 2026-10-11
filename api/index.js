@@ -5324,53 +5324,49 @@ var processGatewayResult = async (bookingId, tranId, result) => {
   if (!payment || payment.bookingId !== bookingId) {
     return { paymentStatus: PaymentStatus.FAILED, bookingStatus: null, changed: false };
   }
-  if (payment.status === PaymentStatus.SUCCESS) {
+  if (payment.status === PaymentStatus.SUCCESS || payment.status === PaymentStatus.REFUNDED) {
     return {
-      paymentStatus: PaymentStatus.SUCCESS,
+      paymentStatus: payment.status,
       bookingStatus: payment.booking.status,
       changed: false
     };
   }
-  if (result.fail_status === "CANCELLED" || result.status === "CANCELLED") {
-    const updated = await prisma.payment.update({
-      where: { id: payment.id },
-      data: { status: PaymentStatus.CANCELLED }
+  const closeSession = async (to) => {
+    const { count } = await prisma.payment.updateMany({
+      where: { id: payment.id, status: PaymentStatus.INITIATED },
+      data: { status: to }
     });
+    const [current, booking] = await Promise.all([
+      prisma.payment.findUnique({ where: { id: payment.id }, select: { status: true } }),
+      prisma.booking.findUnique({ where: { id: bookingId }, select: { status: true } })
+    ]);
     return {
-      paymentStatus: updated.status,
-      bookingStatus: payment.booking.status,
-      changed: updated.status !== payment.status
+      paymentStatus: current?.status ?? to,
+      bookingStatus: booking?.status ?? null,
+      changed: count > 0
     };
+  };
+  if (result.fail_status === "CANCELLED" || result.status === "CANCELLED") {
+    return closeSession(PaymentStatus.CANCELLED);
   }
   if (!result.val_id) {
-    const updated = await prisma.payment.update({
-      where: { id: payment.id },
-      data: { status: PaymentStatus.FAILED }
-    });
-    return {
-      paymentStatus: updated.status,
-      bookingStatus: payment.booking.status,
-      changed: updated.status !== payment.status
-    };
+    return closeSession(PaymentStatus.FAILED);
   }
   const { verified, isValid } = await verifySuccess(result.val_id, {
     tranId: payment.tranId,
     amount: payment.amount
   });
   if (!isValid) {
-    const updated = await prisma.payment.update({
-      where: { id: payment.id },
-      data: { status: PaymentStatus.FAILED }
-    });
-    return {
-      paymentStatus: updated.status,
-      bookingStatus: payment.booking.status,
-      changed: true
-    };
+    return closeSession(PaymentStatus.FAILED);
   }
   const settled = await prisma.$transaction(async (tx) => {
-    const updated = await tx.payment.update({
-      where: { id: payment.id },
+    const paymentCas = await tx.payment.updateMany({
+      where: {
+        id: payment.id,
+        status: {
+          in: [PaymentStatus.INITIATED, PaymentStatus.CANCELLED, PaymentStatus.FAILED]
+        }
+      },
       data: {
         status: PaymentStatus.SUCCESS,
         valId: result.val_id,
@@ -5379,26 +5375,52 @@ var processGatewayResult = async (bookingId, tranId, result) => {
         paidAt: /* @__PURE__ */ new Date()
       }
     });
-    await tx.booking.updateMany({
+    if (paymentCas.count === 0) return { won: false, bookingPaid: false };
+    const bookingCas = await tx.booking.updateMany({
       where: { id: bookingId, status: BookingStatus.PENDING },
       data: { status: BookingStatus.PAID }
     });
-    return updated;
+    return { won: true, bookingPaid: bookingCas.count > 0 };
   });
-  const bookingAfter = await prisma.booking.findUnique({ where: { id: bookingId } });
-  runInBackground([
-    sendBookingEmail({
-      email: payment.booking.user.email,
-      name: payment.booking.user.name,
-      packageTitle: payment.booking.package.title,
-      travelDate: payment.booking.travelDate,
-      travelers: payment.booking.travelers,
-      totalPrice: Number(payment.amount),
-      status: BookingStatus.PAID
-    })
+  const [paymentAfter, bookingAfter] = await Promise.all([
+    prisma.payment.findUnique({ where: { id: payment.id }, select: { status: true } }),
+    prisma.booking.findUnique({ where: { id: bookingId }, select: { status: true } })
   ]);
+  if (!settled.won) {
+    return {
+      paymentStatus: paymentAfter?.status ?? PaymentStatus.SUCCESS,
+      bookingStatus: bookingAfter?.status ?? null,
+      changed: false
+    };
+  }
+  const user = payment.booking.user;
+  const packageTitle = payment.booking.package.title;
+  if (settled.bookingPaid) {
+    runInBackground([
+      sendBookingEmail({
+        email: user.email,
+        name: user.name,
+        packageTitle,
+        travelDate: payment.booking.travelDate,
+        travelers: payment.booking.travelers,
+        totalPrice: Number(payment.amount),
+        status: BookingStatus.PAID
+      })
+    ]);
+  } else if (bookingAfter?.status === BookingStatus.CANCELLED) {
+    await issueRefunds(bookingId, {
+      email: user.email,
+      name: user.name,
+      packageTitle,
+      travelDate: payment.booking.travelDate
+    });
+  }
+  const finalPayment = await prisma.payment.findUnique({
+    where: { id: payment.id },
+    select: { status: true }
+  });
   return {
-    paymentStatus: settled.status,
+    paymentStatus: finalPayment?.status ?? PaymentStatus.SUCCESS,
     bookingStatus: bookingAfter?.status ?? null,
     changed: true
   };
