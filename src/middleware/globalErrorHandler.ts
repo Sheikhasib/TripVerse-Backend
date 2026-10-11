@@ -21,8 +21,26 @@ const globalErrorHandler = (
   let errorMessage: string = err?.message || "Internal Server Error";
   let errorName: string = err?.name || "Error";
 
+  // Body-parser errors (malformed JSON, payload too large, bad charset...) carry
+  // a 4xx status — they are the client's fault, not a server failure.
+  if (
+    !(err instanceof AppError) &&
+    typeof err?.status === "number" &&
+    err.status >= 400 &&
+    err.status < 500
+  ) {
+    statusCode = err.status;
+    errorName = "BadRequestError";
+    errorMessage =
+      err.type === "entity.parse.failed"
+        ? "Malformed JSON in request body."
+        : err.type === "entity.too.large"
+          ? "Request body is too large."
+          : "The request could not be processed.";
+  }
+
   // Zod validation error
-  if (err instanceof ZodError) {
+  else if (err instanceof ZodError) {
     statusCode = httpStatus.BAD_REQUEST;
     errorMessage = err.issues.map((i) => i.message).join(", ");
     errorName = "ZodError";
@@ -67,8 +85,9 @@ const globalErrorHandler = (
       errorMessage =
         "An operation failed because one or more required records were not found.";
     } else {
+      // never echo a raw Prisma message to the client
       statusCode = httpStatus.BAD_REQUEST;
-      errorMessage = err.message;
+      errorMessage = "The request could not be processed.";
     }
   }
 
@@ -85,7 +104,7 @@ const globalErrorHandler = (
       errorMessage = "Can't reach the database server.";
     } else {
       statusCode = httpStatus.INTERNAL_SERVER_ERROR;
-      errorMessage = err.message;
+      errorMessage = "Internal Server Error";
     }
   }
 
@@ -110,12 +129,19 @@ const globalErrorHandler = (
     errorName = err.name || "Error";
   }
 
+  // Internal details (driver errors, stack-derived messages) never reach
+  // clients in production — a 5xx says only "Internal Server Error".
+  if (statusCode >= 500 && config.is_production) {
+    errorMessage = "Internal Server Error";
+    errorName = "Error";
+  }
+
   res.status(statusCode).json({
     success: false,
     statusCode,
     name: errorName,
     message: errorMessage,
-    error: process.env.NODE_ENV === "development" ? err.stack : undefined,
+    error: config.node_env === "development" ? err.stack : undefined,
   });
 };
 

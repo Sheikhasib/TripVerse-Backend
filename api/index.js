@@ -530,7 +530,11 @@ var globalErrorHandler = (err, req, res, next) => {
   let statusCode = httpStatus.INTERNAL_SERVER_ERROR;
   let errorMessage = err?.message || "Internal Server Error";
   let errorName = err?.name || "Error";
-  if (err instanceof ZodError) {
+  if (!(err instanceof AppError) && typeof err?.status === "number" && err.status >= 400 && err.status < 500) {
+    statusCode = err.status;
+    errorName = "BadRequestError";
+    errorMessage = err.type === "entity.parse.failed" ? "Malformed JSON in request body." : err.type === "entity.too.large" ? "Request body is too large." : "The request could not be processed.";
+  } else if (err instanceof ZodError) {
     statusCode = httpStatus.BAD_REQUEST;
     errorMessage = err.issues.map((i) => i.message).join(", ");
     errorName = "ZodError";
@@ -558,7 +562,7 @@ var globalErrorHandler = (err, req, res, next) => {
       errorMessage = "An operation failed because one or more required records were not found.";
     } else {
       statusCode = httpStatus.BAD_REQUEST;
-      errorMessage = err.message;
+      errorMessage = "The request could not be processed.";
     }
   } else if (err instanceof prismaNamespace_exports.PrismaClientInitializationError) {
     errorName = "PrismaClientInitializationError";
@@ -570,7 +574,7 @@ var globalErrorHandler = (err, req, res, next) => {
       errorMessage = "Can't reach the database server.";
     } else {
       statusCode = httpStatus.INTERNAL_SERVER_ERROR;
-      errorMessage = err.message;
+      errorMessage = "Internal Server Error";
     }
   } else if (err instanceof prismaNamespace_exports.PrismaClientUnknownRequestError) {
     statusCode = httpStatus.INTERNAL_SERVER_ERROR;
@@ -585,12 +589,16 @@ var globalErrorHandler = (err, req, res, next) => {
     errorMessage = err.message || "Internal Server Error";
     errorName = err.name || "Error";
   }
+  if (statusCode >= 500 && config_default.is_production) {
+    errorMessage = "Internal Server Error";
+    errorName = "Error";
+  }
   res.status(statusCode).json({
     success: false,
     statusCode,
     name: errorName,
     message: errorMessage,
-    error: process.env.NODE_ENV === "development" ? err.stack : void 0
+    error: config_default.node_env === "development" ? err.stack : void 0
   });
 };
 var globalErrorHandler_default = globalErrorHandler;
