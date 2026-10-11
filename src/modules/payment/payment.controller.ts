@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import httpStatus from "http-status";
+import { PaymentStatus } from "../../../generated/prisma/enums";
 import config from "../../config";
 import { catchAsync } from "../../utils/catchAsync";
 import { sendResponse } from "../../utils/sendResponse";
@@ -28,9 +29,8 @@ const confirmPayment = catchAsync(
   async (req: Request, res: Response, next: NextFunction) => {
     const bookingId = String(req.query.bookingId);
     const tranId = String(req.query.tranId);
-    const status = String(req.query.status ?? "fail");
 
-    await paymentService.processGatewayResult(
+    const outcome = await paymentService.processGatewayResult(
       bookingId,
       tranId,
       req.body as IGatewayResult,
@@ -40,7 +40,14 @@ const confirmPayment = catchAsync(
       config.is_production && config.frontend_url_prod
         ? config.frontend_url_prod
         : config.frontend_url_dev;
-    const page = ["success", "fail", "cancel"].includes(status) ? status : "fail";
+    // The page reflects the verified result, never the ?status= in the URL
+    // (anyone can type that). A refunded late payment is not a success either.
+    const page =
+      outcome.paymentStatus === PaymentStatus.SUCCESS
+        ? "success"
+        : outcome.paymentStatus === PaymentStatus.CANCELLED
+          ? "cancel"
+          : "fail";
 
     res.redirect(302, `${redirectBase}/payment/${page}?bookingId=${bookingId}`);
   },

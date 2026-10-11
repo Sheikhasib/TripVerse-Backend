@@ -5447,14 +5447,13 @@ var confirmPayment = catchAsync(
   async (req, res, next) => {
     const bookingId = String(req.query.bookingId);
     const tranId = String(req.query.tranId);
-    const status = String(req.query.status ?? "fail");
-    await paymentService.processGatewayResult(
+    const outcome = await paymentService.processGatewayResult(
       bookingId,
       tranId,
       req.body
     );
     const redirectBase = config_default.is_production && config_default.frontend_url_prod ? config_default.frontend_url_prod : config_default.frontend_url_dev;
-    const page = ["success", "fail", "cancel"].includes(status) ? status : "fail";
+    const page = outcome.paymentStatus === PaymentStatus.SUCCESS ? "success" : outcome.paymentStatus === PaymentStatus.CANCELLED ? "cancel" : "fail";
     res.redirect(302, `${redirectBase}/payment/${page}?bookingId=${bookingId}`);
   }
 );

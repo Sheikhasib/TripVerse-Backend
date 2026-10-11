@@ -347,6 +347,25 @@ describe("payment", () => {
     ).toHaveLength(0);
   });
 
+  it("redirects by the verified result, not the ?status= in the URL", async () => {
+    // forged ?status=success without a gateway-verified payment -> fail page
+    const forged = await settledBooking();
+    const forgedTran = forged.session.body.data.tranId;
+    const failRes = await request(app)
+      .post(`/api/payments/confirm?bookingId=${forged.booking.id}&tranId=${forgedTran}&status=success`)
+      .send({ status: "FAILED" });
+    expect(failRes.headers.location).toContain("/payment/fail");
+
+    // genuine payment reached via ?status=fail -> success page
+    const genuine = await settledBooking();
+    const genuineTran = genuine.session.body.data.tranId;
+    sslcommerzValidate.mockResolvedValue(validatorFor(genuineTran));
+    const okRes = await request(app)
+      .post(`/api/payments/confirm?bookingId=${genuine.booking.id}&tranId=${genuineTran}&status=fail`)
+      .send(gatewayBody);
+    expect(okRes.headers.location).toContain("/payment/success");
+  });
+
   it("marks a cancel callback payment as CANCELLED", async () => {
     const { booking, session } = await settledBooking();
     const tranId = session.body.data.tranId;
