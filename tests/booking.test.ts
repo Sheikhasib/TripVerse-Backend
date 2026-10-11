@@ -220,6 +220,39 @@ describe("booking", () => {
     expect(res.body.data.status).toBe(BookingStatus.CANCELLED);
   });
 
+  it("reverting a CONFIRMED booking with settled money goes back to PAID, not PENDING", async () => {
+    const user = await createUser();
+    const admin = await createAdmin();
+    const booking = await createBooking({ userId: user.id, status: BookingStatus.CONFIRMED });
+    await createPayment(booking.id, { status: PaymentStatus.SUCCESS });
+
+    const { accessToken } = await loginAs(admin);
+    const res = await request(app)
+      .patch(`/api/bookings/${booking.id}/status`)
+      .set(bearer(accessToken))
+      .send({ status: BookingStatus.PENDING });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe(BookingStatus.PAID);
+    const fresh = await prisma.booking.findUnique({ where: { id: booking.id } });
+    expect(fresh?.status).toBe(BookingStatus.PAID);
+  });
+
+  it("reverting a CONFIRMED booking with no settled money still goes to PENDING", async () => {
+    const user = await createUser();
+    const admin = await createAdmin();
+    const booking = await createBooking({ userId: user.id, status: BookingStatus.CONFIRMED });
+
+    const { accessToken } = await loginAs(admin);
+    const res = await request(app)
+      .patch(`/api/bookings/${booking.id}/status`)
+      .set(bearer(accessToken))
+      .send({ status: BookingStatus.PENDING });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe(BookingStatus.PENDING);
+  });
+
   it("keeps the payment SUCCESS (money-safe) when the gateway refund fails", async () => {
     sslcommerzRefund.mockRejectedValueOnce(
       new AppError(502, "SSLCommerz refund rejected: Invalid Request"),

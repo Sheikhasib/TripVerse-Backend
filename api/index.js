@@ -2966,9 +2966,16 @@ var updateBookingStatus = async (id, payload, actor) => {
   }
   let closedRefunds = { count: 0 };
   const updated = await prisma.$transaction(async (tx) => {
+    let target = to;
+    if (to === BookingStatus.PENDING) {
+      const settled = await tx.payment.count({
+        where: { bookingId: id, status: PaymentStatus.SUCCESS }
+      });
+      if (settled > 0) target = BookingStatus.PAID;
+    }
     const result = await tx.booking.updateMany({
       where: { id, status: booking.status },
-      data: { status: to }
+      data: { status: target }
     });
     if (result.count === 0) {
       throw new AppError(

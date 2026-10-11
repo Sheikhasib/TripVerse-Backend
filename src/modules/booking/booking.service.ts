@@ -537,9 +537,19 @@ const updateBookingStatus = async (
   // matches — a concurrent change makes count 0 and the request fails safely.
   let closedRefunds = { count: 0 };
   const updated = await prisma.$transaction(async (tx) => {
+    // A booking with settled money must never fall back to PENDING (that would
+    // allow a second payment or a full self-refund) — the revert lands on PAID.
+    let target: BookingStatus = to;
+    if (to === BookingStatus.PENDING) {
+      const settled = await tx.payment.count({
+        where: { bookingId: id, status: PaymentStatus.SUCCESS },
+      });
+      if (settled > 0) target = BookingStatus.PAID;
+    }
+
     const result = await tx.booking.updateMany({
       where: { id, status: booking.status },
-      data: { status: to },
+      data: { status: target },
     });
     if (result.count === 0) {
       throw new AppError(
