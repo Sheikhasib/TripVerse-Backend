@@ -1,10 +1,11 @@
 import { NextFunction, Request, Response } from "express";
 import httpStatus from "http-status";
+import config from "../../config";
 import { authService } from "./auth.service";
 import { catchAsync } from "../../utils/catchAsync";
 import { sendResponse } from "../../utils/sendResponse";
 
-const isProduction = process.env.NODE_ENV === "production";
+const isProduction = config.is_production;
 
 // Dev (localhost:3000 → :4000) is same-site → lax works with secure:false.
 // Prod (cross-site frontend/backend) requires SameSite=None + Secure.

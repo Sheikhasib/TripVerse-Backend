@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import app from "../src/app";
+import config from "../src/config";
 import { prisma } from "../src/lib/prisma";
 import { Role, UserStatus } from "../generated/prisma/enums";
 import { TEST_PASSWORD, bearer, createAdmin, createUser, loginAs } from "./factories";
@@ -67,6 +68,15 @@ describe("auth", () => {
 
       expect(res.status).toBe(403);
       expect(res.body.message).toMatch(/suspended/i);
+    });
+
+    it("lowercases the email, so a differently-cased login still works", async () => {
+      const user = await createUser();
+      const res = await request(app)
+        .post("/api/auth/login")
+        .send({ email: user.email.toUpperCase(), password: TEST_PASSWORD });
+
+      expect(res.status).toBe(200);
     });
 
     it("logs in successfully and returns tokens + httpOnly cookies", async () => {
@@ -271,6 +281,65 @@ describe("auth", () => {
         .post("/api/auth/google")
         .send({ idToken: "dummy-id-token" });
       expect([400, 401]).toContain(res.status);
+    });
+
+    describe("with a verified Google token", () => {
+      const realClientId = config.google_client_id;
+      beforeAll(() => {
+        config.google_client_id = "test-client-id";
+      });
+      afterAll(() => {
+        config.google_client_id = realClientId;
+      });
+      afterEach(() => {
+        googleClient.verifyIdToken.mockReset();
+        googleClient.verifyIdToken.mockImplementation(async () => {
+          throw new Error("invalid token");
+        });
+      });
+
+      const googleAs = (email: string, sub: string) =>
+        googleClient.verifyIdToken.mockResolvedValue({
+          getPayload: () => ({ email, email_verified: true, sub, name: "G User" }),
+        } as never);
+
+      it("rejects a SUSPENDED user with 403 and issues no tokens", async () => {
+        const user = await createUser({ status: UserStatus.SUSPENDED });
+        googleAs(user.email.toUpperCase(), `sub-${user.id}`);
+
+        const res = await request(app).post("/api/auth/google").send({ idToken: "t" });
+
+        expect(res.status).toBe(403);
+        expect(res.headers["set-cookie"]).toBeUndefined();
+      });
+
+      it("rejects a deleted user with 403", async () => {
+        const user = await createUser({ isDeleted: true });
+        googleAs(user.email, `sub-${user.id}`);
+
+        const res = await request(app).post("/api/auth/google").send({ idToken: "t" });
+
+        expect(res.status).toBe(403);
+      });
+    });
+
+    it("lets a Google user update profile fields but not the password", async () => {
+      const user = await createUser();
+      const { accessToken } = await loginAs(user);
+      await prisma.user.update({ where: { id: user.id }, data: { authProvider: "GOOGLE" } });
+
+      const ok = await request(app)
+        .patch("/api/users/profile")
+        .set(bearer(accessToken))
+        .send({ name: "New Name" });
+      expect(ok.status).toBe(200);
+      expect(ok.body.data.name).toBe("New Name");
+
+      const blocked = await request(app)
+        .patch("/api/users/profile")
+        .set(bearer(accessToken))
+        .send({ currentPassword: "whatever1", newPassword: "another-pass1" });
+      expect(blocked.status).toBe(403);
     });
   });
 });

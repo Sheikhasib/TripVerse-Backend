@@ -366,7 +366,8 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
 
 // ── Login ───────────────────────────────────────────────────────────────
 const loginUser = async (payload: ILoginUser) => {
-  const { email, password } = payload;
+  const { password } = payload;
+  const email = payload.email.trim().toLowerCase();
 
   const user = await prisma.user.findUnique({
     where: { email },
@@ -422,11 +423,12 @@ const googleLogin = async (payload: IGoogleLoginPayload) => {
     throw new AppError(400, "Invalid Google token payload");
   }
 
-  const { email, name, sub, picture } = googleData;
+  const { name, sub, picture } = googleData;
 
-  if (!email || !googleData.email_verified) {
+  if (!googleData.email || !googleData.email_verified) {
     throw new AppError(400, "Google account email is not verified");
   }
+  const email = googleData.email.trim().toLowerCase();
 
   let user = await prisma.user.findUnique({ where: { googleId: sub } });
 
@@ -465,8 +467,16 @@ const googleLogin = async (payload: IGoogleLoginPayload) => {
     });
   }
 
-  const tokens = await issueTokens(user!);
-  const sanitizedUser = sanitizeUser(user!);
+  // same gate as password login — a deleted or suspended account gets no tokens
+  if (user.isDeleted) {
+    throw new AppError(403, "Account has been deleted");
+  }
+  if (user.status === "SUSPENDED") {
+    throw new AppError(403, "Account is suspended");
+  }
+
+  const tokens = await issueTokens(user);
+  const sanitizedUser = sanitizeUser(user);
 
   return { ...tokens, user: sanitizedUser };
 };

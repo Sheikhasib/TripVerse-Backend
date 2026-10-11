@@ -1018,7 +1018,8 @@ var resetPassword = async (payload) => {
   ]);
 };
 var loginUser = async (payload) => {
-  const { email, password } = payload;
+  const { password } = payload;
+  const email = payload.email.trim().toLowerCase();
   const user = await prisma.user.findUnique({
     where: { email }
   });
@@ -1064,10 +1065,11 @@ var googleLogin = async (payload) => {
   if (!googleData) {
     throw new AppError(400, "Invalid Google token payload");
   }
-  const { email, name, sub, picture } = googleData;
-  if (!email || !googleData.email_verified) {
+  const { name, sub, picture } = googleData;
+  if (!googleData.email || !googleData.email_verified) {
     throw new AppError(400, "Google account email is not verified");
   }
+  const email = googleData.email.trim().toLowerCase();
   let user = await prisma.user.findUnique({ where: { googleId: sub } });
   if (!user && email) {
     user = await prisma.user.findUnique({ where: { email } });
@@ -1099,6 +1101,12 @@ var googleLogin = async (payload) => {
         avatarUrl: picture || null
       }
     });
+  }
+  if (user.isDeleted) {
+    throw new AppError(403, "Account has been deleted");
+  }
+  if (user.status === "SUSPENDED") {
+    throw new AppError(403, "Account is suspended");
   }
   const tokens = await issueTokens(user);
   const sanitizedUser = sanitizeUser(user);
@@ -1241,7 +1249,7 @@ var sendResponse = (res, data) => {
 };
 
 // src/modules/auth/auth.controller.ts
-var isProduction = process.env.NODE_ENV === "production";
+var isProduction = config_default.is_production;
 var cookieOptions = {
   httpOnly: true,
   secure: isProduction,
@@ -1637,10 +1645,10 @@ var updateProfile = async (userId, payload) => {
   if (user.isDeleted) {
     throw new AppError(403, "Account has been deleted");
   }
-  if (user.authProvider === "GOOGLE") {
+  if (user.authProvider === "GOOGLE" && (newPassword || currentPassword)) {
     throw new AppError(
       403,
-      "Google accounts cannot change password. Use Google sign-in to manage your profile."
+      "Google accounts cannot change password. Use Google sign-in to manage your account."
     );
   }
   const data = {};

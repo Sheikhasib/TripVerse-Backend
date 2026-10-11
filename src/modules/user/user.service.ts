@@ -33,10 +33,12 @@ const updateProfile = async (userId: string, payload: IUpdateProfile) => {
   if (user.isDeleted) {
     throw new AppError(403, "Account has been deleted");
   }
-  if (user.authProvider === "GOOGLE") {
+  // Google users manage their profile here like anyone else; only the
+  // password change is closed to them (they have no password).
+  if (user.authProvider === "GOOGLE" && (newPassword || currentPassword)) {
     throw new AppError(
       403,
-      "Google accounts cannot change password. Use Google sign-in to manage your profile.",
+      "Google accounts cannot change password. Use Google sign-in to manage your account.",
     );
   }
 
