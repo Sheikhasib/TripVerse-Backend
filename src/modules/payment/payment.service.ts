@@ -1,3 +1,4 @@
+import { Prisma } from "../../../generated/prisma/client";
 import { BookingStatus, PaymentStatus } from "../../../generated/prisma/enums";
 import config from "../../config";
 import { prisma } from "../../lib/prisma";
@@ -114,27 +115,42 @@ const createPaymentSession = async (
   };
 };
 
+// Money compared in integer paisa — never float ===.
+const toPaisa = (value: string | number | Prisma.Decimal): number | null => {
+  try {
+    return new Prisma.Decimal(value).mul(100).round().toNumber();
+  } catch {
+    return null; // not a number
+  }
+};
+
 // Server-side verification of a completed transaction: the validator returns
-// VALID (first check) or VALIDATED (already verified before) with the amount.
-// Anything else — or a mismatched amount — fails the payment.
+// VALID (first check) or VALIDATED (already verified before). The result must
+// also belong to THIS payment — same tran_id, same amount (in paisa), BDT —
+// otherwise a val_id from another paid booking could be replayed here.
 const verifySuccess = async (
   valId: string,
-  expectedAmount: number,
-): Promise<{ verified: SslcommerzValidationResult | null; matchesAmount: boolean }> => {
+  expected: { tranId: string; amount: Prisma.Decimal },
+): Promise<{ verified: SslcommerzValidationResult | null; isValid: boolean }> => {
   let verified: SslcommerzValidationResult | null = null;
   try {
     verified = await sslcommerzValidate({ val_id: valId });
   } catch {
     // validator unreachable — fail the payment rather than crash the callback
-    return { verified: null, matchesAmount: false };
+    return { verified: null, isValid: false };
   }
 
   const validStatus =
     verified.status === "VALID" || verified.status === "VALIDATED";
-  const matchesAmount =
-    verified.amount !== undefined && Number(verified.amount) === expectedAmount;
+  const matchesTranId = verified.tran_id === expected.tranId;
+  const paid = verified.amount === undefined ? null : toPaisa(verified.amount);
+  const matchesAmount = paid !== null && paid === toPaisa(expected.amount);
+  const matchesCurrency = (verified.currency_type ?? verified.currency) === "BDT";
 
-  return { verified, matchesAmount: validStatus && matchesAmount };
+  return {
+    verified,
+    isValid: validStatus && matchesTranId && matchesAmount && matchesCurrency,
+  };
 };
 
 // Shared by the confirm (success/fail/cancel) and IPN endpoints. Idempotent: a
@@ -196,12 +212,12 @@ const processGatewayResult = async (
   }
 
   // Success path: verify server-side and only then mark the booking as paid.
-  const { verified, matchesAmount } = await verifySuccess(
-    result.val_id,
-    Number(payment.amount),
-  );
+  const { verified, isValid } = await verifySuccess(result.val_id, {
+    tranId: payment.tranId,
+    amount: payment.amount,
+  });
 
-  if (!matchesAmount) {
+  if (!isValid) {
     const updated = await prisma.payment.update({
       where: { id: payment.id },
       data: { status: PaymentStatus.FAILED },

@@ -5285,16 +5285,29 @@ var createPaymentSession = async (userId, payload) => {
     paymentUrl: init.GatewayPageURL ?? null
   };
 };
-var verifySuccess = async (valId, expectedAmount) => {
+var toPaisa = (value) => {
+  try {
+    return new prismaNamespace_exports.Decimal(value).mul(100).round().toNumber();
+  } catch {
+    return null;
+  }
+};
+var verifySuccess = async (valId, expected) => {
   let verified = null;
   try {
     verified = await sslcommerzValidate({ val_id: valId });
   } catch {
-    return { verified: null, matchesAmount: false };
+    return { verified: null, isValid: false };
   }
   const validStatus = verified.status === "VALID" || verified.status === "VALIDATED";
-  const matchesAmount = verified.amount !== void 0 && Number(verified.amount) === expectedAmount;
-  return { verified, matchesAmount: validStatus && matchesAmount };
+  const matchesTranId = verified.tran_id === expected.tranId;
+  const paid = verified.amount === void 0 ? null : toPaisa(verified.amount);
+  const matchesAmount = paid !== null && paid === toPaisa(expected.amount);
+  const matchesCurrency = (verified.currency_type ?? verified.currency) === "BDT";
+  return {
+    verified,
+    isValid: validStatus && matchesTranId && matchesAmount && matchesCurrency
+  };
 };
 var processGatewayResult = async (bookingId, tranId, result) => {
   const payment = await prisma.payment.findUnique({
@@ -5340,11 +5353,11 @@ var processGatewayResult = async (bookingId, tranId, result) => {
       changed: updated.status !== payment.status
     };
   }
-  const { verified, matchesAmount } = await verifySuccess(
-    result.val_id,
-    Number(payment.amount)
-  );
-  if (!matchesAmount) {
+  const { verified, isValid } = await verifySuccess(result.val_id, {
+    tranId: payment.tranId,
+    amount: payment.amount
+  });
+  if (!isValid) {
     const updated = await prisma.payment.update({
       where: { id: payment.id },
       data: { status: PaymentStatus.FAILED }

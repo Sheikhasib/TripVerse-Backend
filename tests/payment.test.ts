@@ -42,6 +42,16 @@ const gatewayBody = {
   bank_tran_id: "bank-test-1",
 };
 
+// What the gateway validator returns for a genuine, matching transaction.
+const validatorFor = (tranId: string, overrides: Record<string, string> = {}) => ({
+  status: "VALID",
+  tran_id: tranId,
+  amount: "2000.00",
+  currency_type: "BDT",
+  bank_tran_id: gatewayBody.bank_tran_id,
+  ...overrides,
+});
+
 async function settledBooking() {
   const user = await createUser();
   const booking = await createBooking({ userId: user.id });
@@ -123,14 +133,9 @@ describe("payment", () => {
   });
 
   it("settles the booking only after the validator confirms the amount", async () => {
-    sslcommerzValidate.mockResolvedValue({
-      status: "VALID",
-      amount: "2000.00",
-      bank_tran_id: gatewayBody.bank_tran_id,
-    });
-
     const { booking, session } = await settledBooking();
     const tranId = session.body.data.tranId;
+    sslcommerzValidate.mockResolvedValue(validatorFor(tranId));
 
     const confirm = await request(app)
       .post(`/api/payments/confirm?bookingId=${booking.id}&tranId=${tranId}&status=success`)
@@ -149,14 +154,9 @@ describe("payment", () => {
   });
 
   it("a double-fired IPN is idempotent — never double-settles", async () => {
-    sslcommerzValidate.mockResolvedValue({
-      status: "VALID",
-      amount: "2000.00",
-      bank_tran_id: gatewayBody.bank_tran_id,
-    });
-
     const { booking, session } = await settledBooking();
     const tranId = session.body.data.tranId;
+    sslcommerzValidate.mockResolvedValue(validatorFor(tranId));
 
     const first = await request(app)
       .post(`/api/payments/ipn?bookingId=${booking.id}&tranId=${tranId}`)
@@ -178,14 +178,9 @@ describe("payment", () => {
 
   it("fails the payment when the validated amount does not match", async () => {
     // validator reports a different amount than the frozen booking total
-    sslcommerzValidate.mockResolvedValue({
-      status: "VALID",
-      amount: "1.00",
-      bank_tran_id: gatewayBody.bank_tran_id,
-    });
-
     const { booking, session } = await settledBooking();
     const tranId = session.body.data.tranId;
+    sslcommerzValidate.mockResolvedValue(validatorFor(tranId, { amount: "1.00" }));
 
     await request(app)
       .post(`/api/payments/confirm?bookingId=${booking.id}&tranId=${tranId}&status=success`)
@@ -196,6 +191,49 @@ describe("payment", () => {
 
     const bookingAfter = await prisma.booking.findUnique({ where: { id: booking.id } });
     expect(bookingAfter?.status).toBe(BookingStatus.PENDING);
+  });
+
+  it("rejects a val_id replayed from another paid booking with the same total", async () => {
+    const paid = await settledBooking();
+    const victim = await settledBooking();
+    const paidTranId = paid.session.body.data.tranId;
+    const victimTranId = victim.session.body.data.tranId;
+
+    // the validator knows val-A as the genuine payment of the FIRST booking only
+    sslcommerzValidate.mockImplementation(async ({ val_id }: { val_id: string }) =>
+      validatorFor(val_id === "val-A" ? paidTranId : "someone-else"),
+    );
+
+    const real = await request(app)
+      .post(`/api/payments/ipn?bookingId=${paid.booking.id}&tranId=${paidTranId}`)
+      .send({ ...gatewayBody, val_id: "val-A" });
+    expect(real.status).toBe(200);
+    expect((await prisma.payment.findUnique({ where: { tranId: paidTranId } }))?.status).toBe(
+      PaymentStatus.SUCCESS,
+    );
+
+    // attacker replays val-A against the second booking (same 2000.00 total)
+    await request(app)
+      .post(`/api/payments/confirm?bookingId=${victim.booking.id}&tranId=${victimTranId}&status=success`)
+      .send({ ...gatewayBody, val_id: "val-A" });
+
+    const payment = await prisma.payment.findUnique({ where: { tranId: victimTranId } });
+    expect(payment?.status).toBe(PaymentStatus.FAILED);
+    const bookingAfter = await prisma.booking.findUnique({ where: { id: victim.booking.id } });
+    expect(bookingAfter?.status).toBe(BookingStatus.PENDING);
+  });
+
+  it("fails the payment when the validator currency is not BDT", async () => {
+    const { booking, session } = await settledBooking();
+    const tranId = session.body.data.tranId;
+    sslcommerzValidate.mockResolvedValue(validatorFor(tranId, { currency_type: "USD" }));
+
+    await request(app)
+      .post(`/api/payments/ipn?bookingId=${booking.id}&tranId=${tranId}`)
+      .send(gatewayBody);
+
+    const payment = await prisma.payment.findUnique({ where: { tranId } });
+    expect(payment?.status).toBe(PaymentStatus.FAILED);
   });
 
   it("marks a cancel callback payment as CANCELLED", async () => {
