@@ -80,10 +80,14 @@ const authOtpLimiter = rateLimit({
   },
 });
 
-// Standard limiter — everything else under /api
+// Standard limiter — everything else under /api. A signed-in SPA tab polls the
+// unread-notification count every 30s (~30 requests per window) on top of page
+// loads, and the Next.js proxy forwards every browser from one IP — so a
+// budget of 100 was exhausted within minutes and every dashboard call then
+// failed with 429 for all roles at once.
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 100,
+  limit: 1000,
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => process.env.NODE_ENV === "test",

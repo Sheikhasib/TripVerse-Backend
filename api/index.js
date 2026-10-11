@@ -6617,7 +6617,7 @@ var authOtpLimiter = rateLimit({
 });
 var apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1e3,
-  limit: 100,
+  limit: 1e3,
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => process.env.NODE_ENV === "test",
